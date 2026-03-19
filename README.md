@@ -50,17 +50,17 @@ npm run dev
 ```
 
 启动后，后端服务将运行在 `http://localhost:8787`，并且会自动托管前端静态页面。
-打开浏览器访问 [http://localhost:8787/](http://localhost:8787/) 即可使用。
+打开浏览器访问 <http://localhost:8787/> 即可使用。
 
 ## ⚙️ 环境变量说明 (`.env`)
 
-| 变量名 | 说明 | 默认/推荐值 |
-| --- | --- | --- |
-| `QWEN_API_KEY` | 你的阿里云 DashScope API Key | `sk-xxxxxx` |
-| `QWEN_BASE_URL` | Qwen 的 OpenAI 兼容接口地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `QWEN_MODEL` | 使用的模型版本（推荐使用 flash 版本以降低首 Token 延迟） | `qwen3.5-flash` 或 `qwen3.5-plus` |
-| `QWEN_ENABLE_THINKING` | 是否开启模型的深度思考功能 | `false` |
-| `QWEN_MAX_TOKENS` | 单个板块输出的最大 Token 数限制 | `8192` |
+| 变量名                    | 说明                                  | 默认/推荐值                                              |
+| ---------------------- | ----------------------------------- | --------------------------------------------------- |
+| `QWEN_API_KEY`         | 你的阿里云 DashScope API Key             | `sk-xxxxxx`                                         |
+| `QWEN_BASE_URL`        | Qwen 的 OpenAI 兼容接口地址                | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `QWEN_MODEL`           | 使用的模型版本（推荐使用 flash 版本以降低首 Token 延迟） | `qwen3.5-flash` 或 `qwen3.5-plus`                    |
+| `QWEN_ENABLE_THINKING` | 是否开启模型的深度思考功能                       | `false`                                             |
+| `QWEN_MAX_TOKENS`      | 单个板块输出的最大 Token 数限制                 | `8192`                                              |
 
 ## 💡 流式输出与性能说明
 
@@ -92,3 +92,4 @@ meet-helper/
 ├── .gitignore
 └── package.json            # 根目录 npm workspaces 配置
 ```
+
