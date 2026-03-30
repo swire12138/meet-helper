@@ -198,3 +198,47 @@ body {
 .monitor {
   margin-top: 14px;
 }
+
+.floating-ball {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 60px;
+  height: 60px;
+  background-color: #2563eb;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 14px;
+  user-select: none;
+  z-index: 9999;
+  transition: all 0.2s ease;
+}
+
+.floating-ball:hover {
+  transform: scale(1.05);
+  background-color: #1d4ed8;
+}
+
+.floating-ball.capturing {
+  background-color: #dc2626;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 15px rgba(220, 38, 38, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+

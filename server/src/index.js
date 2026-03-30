@@ -6,10 +6,19 @@ import { loadEnv } from "./env.js";
 import { analyzeTranscript, analyzeTranscriptStream } from "./analyze.js";
 import { getQwenConfig } from "./qwenClient.js";
 
+import fs from "node:fs";
+import http from "node:http";
+import { setupScreenCatchRoutes } from "../../screen-catch/api.js";
+
 loadEnv();
 
 const app = express();
+const server = http.createServer(app);
+
 app.use(cors());
+app.use(express.json({ limit: "50mb" }));
+
+setupScreenCatchRoutes(app, server);
 
 const staticDir = path.resolve(process.cwd(), "..", "web-static");
 app.use(express.static(staticDir));
@@ -72,6 +81,6 @@ app.post("/api/analyze-stream", upload.single("file"), async (req, res) => {
 });
 
 const port = Number(process.env.PORT ?? "8787");
-app.listen(port, () => {
+server.listen(port, () => {
   process.stdout.write(`server listening on http://localhost:${port}\n`);
 });

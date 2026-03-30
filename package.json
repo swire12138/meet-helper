@@ -1,6 +1,7 @@
 {
   "name": "meet-helper",
   "private": true,
+  "type": "module",
   "workspaces": [
     "server",
     "web"
