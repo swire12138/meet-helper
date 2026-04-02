@@ -9,6 +9,7 @@ createApp({
     const loading = ref(false);
     const error = ref("");
     const data = ref(null);
+    const caseImages = ref([]);
     const health = ref(null);
     const logs = ref([]);
     const logEl = ref(null);
@@ -148,6 +149,11 @@ createApp({
 
     let currentSessionId = null;
 
+    let analysisInterval = null;
+    let isAnalyzing = false;
+    const caseLastProcessedFile = ref(null);
+    const caseLastProcessedTranscriptLineCount = ref(0);
+
     function appendTranscriptLine(line) {
       if (!line) return;
       transcriptLines.value.push(line);
@@ -232,6 +238,10 @@ createApp({
         transcriptLines.value = [];
         transcriptDraft.value = "";
         fullPcmSamples = [];
+        caseImages.value = [];
+        caseLastProcessedFile.value = null;
+        caseLastProcessedTranscriptLineCount.value = 0;
+        data.value = null;
         const d = new Date();
         const yyyy = d.getFullYear();
         const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -281,6 +291,7 @@ createApp({
       // 使用更现代、推荐的方式或者确保 scriptProcessor 继续工作
       // 为了适配 DashScope 可能需要更大的 buffer size，调整大小并缓存
       window.audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+      
       const asrChunkMsFromUrl = Number(new URLSearchParams(window.location.search).get("asrChunkMs") || "200");
       const asrChunkMs = Number.isFinite(asrChunkMsFromUrl) ? Math.min(800, Math.max(100, asrChunkMsFromUrl)) : 200;
       const targetSamplesPerChunk = Math.max(1600, Math.round((16000 * asrChunkMs) / 1000));
@@ -308,14 +319,13 @@ createApp({
           probe[i] = Math.round(Math.sin(2 * Math.PI * freq * t) * 0x1FFF);
         }
         asrSocket.send(probe.buffer);
-        pushLog("已发送探测音频包");
       }
 
       asrSocket.onmessage = (event) => {
         let msg;
         try {
           msg = JSON.parse(event.data);
-        } catch(e) {
+        } catch (e) {
           return;
         }
         
@@ -327,7 +337,7 @@ createApp({
         } else if (msg.type === "partial") {
           updateTranscriptDraft(msg.text || "");
         } else if (msg.type === "sentence") {
-          const speaker = msg.speakerId || "发言人1";
+          const speaker = msg.speakerId || "未知发言人";
           appendTranscriptLine(`[${speaker}] ${msg.text}`);
         } else if (msg.type === "error") {
           pushLog(`ASR错误: ${msg.message}`);
@@ -340,8 +350,9 @@ createApp({
         const inputData = e.inputBuffer.getChannelData(0);
         for (let i = 0; i < inputData.length; i++) {
           let s = Math.max(-1, Math.min(1, inputData[i]));
-          pcmCache.push(s < 0 ? s * 0x8000 : s * 0x7FFF);
-          fullPcmSamples.push(s);
+          const pcmVal = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          pcmCache.push(pcmVal);
+          fullPcmSamples.push(pcmVal);
         }
 
         // 当积攒到约 3200 采样（约 200 毫秒的音频，16000Hz * 0.2s = 3200）时再发送
@@ -354,11 +365,12 @@ createApp({
       };
 
       source.connect(window.audioProcessor);
-      // 创建一个无声节点来保持 scriptProcessor 工作
-      const dummyNode = audioContext.createGain();
-      dummyNode.gain.value = 0;
-      window.audioProcessor.connect(dummyNode);
-      dummyNode.connect(audioContext.destination);
+      
+      // 创建一个无声节点来保持 scriptProcessor 工作, 防止回声
+      const dummyGain = audioContext.createGain();
+      dummyGain.gain.value = 0;
+      window.audioProcessor.connect(dummyGain);
+      dummyGain.connect(audioContext.destination);
     }
 
     async function startCapture() {
@@ -383,6 +395,11 @@ createApp({
 
         captureInterval = setInterval(takeScreenshot, 5000);
         takeScreenshot();
+
+        pushLog("开启实时分析 (每15秒一次)...");
+        analysisInterval = setInterval(() => {
+          triggerCaseAnalysis(false);
+        }, 15000);
       } catch (e) {
         console.error("Capture failed:", e);
         pushLog("截屏权限被拒绝或发生错误");
@@ -394,6 +411,7 @@ createApp({
       isStoppingCapture = true;
       isCapturing.value = false;
       if (captureInterval) clearInterval(captureInterval);
+      if (analysisInterval) clearInterval(analysisInterval);
       if (videoStream) {
         videoStream.getTracks().forEach(track => track.stop());
         videoStream = null;
@@ -421,7 +439,55 @@ createApp({
       }
       pushLog("停止截屏与录音");
       await finalizeSpeakerDiarization();
+      await triggerCaseAnalysis(true);
       isStoppingCapture = false;
+    }
+
+    async function triggerCaseAnalysis(isFinal = false) {
+      if (!currentSessionId || isAnalyzing) return;
+      isAnalyzing = true;
+      pushLog(isFinal ? "开始最终案例分析..." : "触发实时增量案例分析...");
+      try {
+        const newLines = transcriptLines.value.slice(caseLastProcessedTranscriptLineCount.value);
+        let newTranscriptText = newLines.join("\n");
+        if (isFinal && transcriptDraft.value) {
+            newTranscriptText += "\n[识别中] " + transcriptDraft.value;
+        }
+        
+        const r = await fetch("/api/analyze-case", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            sessionId: currentSessionId, 
+            transcriptText: newTranscriptText,
+            previousAnalysis: data.value,
+            lastProcessedFile: caseLastProcessedFile.value,
+            isFinal
+          })
+        });
+        const res = await r.json();
+        if (res.ok && res.data) {
+          if (res.data.analysis) {
+            data.value = res.data.analysis;
+          }
+          if (res.data.images && res.data.images.length > 0) {
+            caseImages.value.push(...res.data.images);
+          }
+          if (res.data.lastProcessedFile) {
+             caseLastProcessedFile.value = res.data.lastProcessedFile;
+          }
+          caseLastProcessedTranscriptLineCount.value += newLines.length;
+          pushLog(isFinal ? "最终案例分析完成" : "增量案例分析完成");
+        } else if (res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
+          pushLog("暂无新增截屏或内容");
+        } else {
+          pushLog(`案例分析失败: ${res.error || "unknown"}`);
+        }
+      } catch (e) {
+        pushLog("案例分析请求出错");
+      } finally {
+        isAnalyzing = false;
+      }
     }
 
     async function takeScreenshot() {
@@ -462,13 +528,13 @@ createApp({
       logs,
       logEl,
       isCapturing,
+      caseImages,
       formatBytes,
       renderMd,
       onPickFile,
       onUpload,
       onReset,
-      toggleCapture
-      ,
+      toggleCapture,
       getTranscriptDisplay
     };
   },
@@ -512,6 +578,13 @@ createApp({
         <div class="card">
           <div class="panel-title">4. 追问清单（对谁问 / 问什么 / 期待回答）</div>
           <div class="md" v-html="renderMd(data.followUpQuestionsMd)"></div>
+        </div>
+      </div>
+
+      <div v-if="caseImages && caseImages.length > 0" class="card monitor" style="margin-top:20px;">
+        <div class="panel-title">会议截屏记录（自动去重）</div>
+        <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;margin-top:10px;">
+          <img v-for="(img, idx) in caseImages" :key="idx" :src="img" style="max-width:300px;border-radius:8px;border:1px solid #334155;flex-shrink:0;" />
         </div>
       </div>
 

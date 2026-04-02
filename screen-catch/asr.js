@@ -98,6 +98,14 @@ export function setupAsrSocket(server) {
         }
       });
 
+      asrProcess.stdin.on("error", (err) => {
+        if (err.code === "EPIPE" || err.code === "EOF") {
+          // Ignore EPIPE/EOF errors when python process closes its stdin
+        } else {
+          console.error("ASR process stdin error:", err);
+        }
+      });
+
       const outputReader = readline.createInterface({ input: asrProcess.stdout });
       outputReader.on("line", (line) => {
         if (!line) return;
@@ -195,6 +203,7 @@ export function setupAsrSocket(server) {
           }
           asrProcess.stdin.write(audioBuffer);
         } catch (e) {
+          console.error("Failed to write to ASR process stdin:", e);
         }
       }
     });

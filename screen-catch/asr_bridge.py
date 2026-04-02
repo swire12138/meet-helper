@@ -120,8 +120,13 @@ def main():
             if not data:
                 break
             recognition.send_audio_frame(data)
+    except Exception as e:
+        emit({"type": "error", "message": f"ASR Stream Error: {str(e)}"})
     finally:
-        recognition.stop()
+        try:
+            recognition.stop()
+        except Exception:
+            pass
     return 0
 
 
