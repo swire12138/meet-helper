@@ -35,10 +35,29 @@ createApp({
       const source = md ?? "";
       if (!source) return "";
       let html = "";
-      if (typeof markedLib?.parse === "function") html = markedLib.parse(source);
-      else if (typeof markedLib === "function") html = markedLib(source);
-      else html = source;
-      return globalThis.DOMPurify?.sanitize ? globalThis.DOMPurify.sanitize(html) : html;
+      // Handle the case where markedLib is an object (v4+) or function (older versions)
+      try {
+        if (markedLib && typeof markedLib.parse === "function") {
+          html = markedLib.parse(source);
+        } else if (typeof markedLib === "function") {
+          html = markedLib(source);
+        } else {
+          html = source;
+        }
+      } catch(e) {
+        console.error("Marked parse error:", e);
+        html = source;
+      }
+      
+      // Configure DOMPurify to allow standard markdown tags
+      const purifyConfig = {
+        ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'p', 'a', 'ul', 'ol',
+          'nl', 'li', 'b', 'i', 'strong', 'em', 'strike', 'code', 'hr', 'br', 'div',
+          'table', 'thead', 'caption', 'tbody', 'tr', 'th', 'td', 'pre', 'span'],
+        ALLOWED_ATTR: ['href', 'name', 'target', 'class']
+      };
+      
+      return globalThis.DOMPurify?.sanitize ? globalThis.DOMPurify.sanitize(html, purifyConfig) : html;
     }
 
     function onPickFile(e) {
@@ -338,7 +357,9 @@ createApp({
           updateTranscriptDraft(msg.text || "");
         } else if (msg.type === "sentence") {
           const speaker = msg.speakerId || "未知发言人";
-          appendTranscriptLine(`[${speaker}] ${msg.text}`);
+          const now = new Date();
+          const ts = String(now.getHours()).padStart(2, '0') + ":" + String(now.getMinutes()).padStart(2, '0') + ":" + String(now.getSeconds()).padStart(2, '0');
+          appendTranscriptLine(`[${ts}] [${speaker}] ${msg.text}`);
         } else if (msg.type === "error") {
           pushLog(`ASR错误: ${msg.message}`);
         }
@@ -396,8 +417,9 @@ createApp({
         captureInterval = setInterval(takeScreenshot, 5000);
         takeScreenshot();
 
-        pushLog("开启实时分析 (每15秒一次)...");
-        analysisInterval = setInterval(() => {
+        pushLog("开启实时分析 (基于上一轮完成自动触发)...");
+        // 第一次延迟 15 秒后触发，后续由 triggerCaseAnalysis 自己回调
+        analysisInterval = setTimeout(() => {
           triggerCaseAnalysis(false);
         }, 15000);
       } catch (e) {
@@ -411,7 +433,7 @@ createApp({
       isStoppingCapture = true;
       isCapturing.value = false;
       if (captureInterval) clearInterval(captureInterval);
-      if (analysisInterval) clearInterval(analysisInterval);
+      if (analysisInterval) clearTimeout(analysisInterval);
       if (videoStream) {
         videoStream.getTracks().forEach(track => track.stop());
         videoStream = null;
@@ -448,27 +470,67 @@ createApp({
       isAnalyzing = true;
       pushLog(isFinal ? "开始最终案例分析..." : "触发实时增量案例分析...");
       try {
+        // 在发给后端前，截取上下文长度。只给后端发最新的几行以及之前同等长度的上下文。
         const newLines = transcriptLines.value.slice(caseLastProcessedTranscriptLineCount.value);
         let newTranscriptText = newLines.join("\n");
         if (isFinal && transcriptDraft.value) {
             newTranscriptText += "\n[识别中] " + transcriptDraft.value;
         }
-        
+
+        // 计算上下文长度（提取和新增内容同样行数的历史记录作为上下文参考）
+        const contextLineCount = newLines.length;
+        const startIndex = Math.max(0, caseLastProcessedTranscriptLineCount.value - contextLineCount);
+        const contextLines = transcriptLines.value.slice(startIndex, caseLastProcessedTranscriptLineCount.value);
+        let contextTranscriptText = contextLines.join("\n");
+
         const r = await fetch("/api/analyze-case", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 
             sessionId: currentSessionId, 
-            transcriptText: newTranscriptText,
+            transcriptText: newTranscriptText, // 新增转写
+            contextTranscriptText: contextTranscriptText, // 上下文转写
             previousAnalysis: data.value,
             lastProcessedFile: caseLastProcessedFile.value,
             isFinal
           })
         });
+        
+        // 关键修复：在这里立刻更新指针，防止并发或下一次轮询时漏掉这部分文本
+        caseLastProcessedTranscriptLineCount.value += newLines.length;
+
         const res = await r.json();
         if (res.ok && res.data) {
           if (res.data.analysis) {
-            data.value = res.data.analysis;
+            // 前端自行处理增量追加
+            if (data.value) {
+              // 追加：修正后的会议转写
+              if (res.data.analysis.correctedTranscriptMd) {
+                 const oldText = data.value.correctedTranscriptMd || "";
+                 let newText = res.data.analysis.correctedTranscriptMd || "";
+                 // 强行去除大模型可能包裹的 markdown 代码块标记
+                 newText = newText.replace(/^```[a-zA-Z]*\s*\n/, '').replace(/\n```\s*$/, '').trim();
+                 // 为了触发 Vue 响应式，我们需要重新赋值整个对象
+                 data.value = {
+                   ...data.value,
+                   correctedTranscriptMd: oldText + (oldText ? "\n\n" : "") + newText,
+                   participantsAndViewpointsMd: res.data.analysis.participantsAndViewpointsMd || data.value.participantsAndViewpointsMd,
+                   topicsReportMd: res.data.analysis.topicsReportMd || data.value.topicsReportMd,
+                   followUpQuestionsMd: res.data.analysis.followUpQuestionsMd || data.value.followUpQuestionsMd,
+                   glossaryMd: res.data.analysis.glossaryMd || data.value.glossaryMd
+                 };
+              } else {
+                 data.value = {
+                   ...data.value,
+                   participantsAndViewpointsMd: res.data.analysis.participantsAndViewpointsMd || data.value.participantsAndViewpointsMd,
+                   topicsReportMd: res.data.analysis.topicsReportMd || data.value.topicsReportMd,
+                   followUpQuestionsMd: res.data.analysis.followUpQuestionsMd || data.value.followUpQuestionsMd,
+                   glossaryMd: res.data.analysis.glossaryMd || data.value.glossaryMd
+                 };
+              }
+            } else {
+              data.value = res.data.analysis;
+            }
           }
           if (res.data.images && res.data.images.length > 0) {
             caseImages.value.push(...res.data.images);
@@ -476,7 +538,6 @@ createApp({
           if (res.data.lastProcessedFile) {
              caseLastProcessedFile.value = res.data.lastProcessedFile;
           }
-          caseLastProcessedTranscriptLineCount.value += newLines.length;
           pushLog(isFinal ? "最终案例分析完成" : "增量案例分析完成");
         } else if (res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
           pushLog("暂无新增截屏或内容");
@@ -487,6 +548,13 @@ createApp({
         pushLog("案例分析请求出错");
       } finally {
         isAnalyzing = false;
+        // 如果还没有停止捕捉，且不是最后一次分析，那么排队下一次分析
+        if (isCapturing.value && !isFinal) {
+           // 为了避免大模型极速返回导致死循环发请求（可能没有新数据），加一个合理的缓冲间隔，例如 5 秒
+           analysisInterval = setTimeout(() => {
+             triggerCaseAnalysis(false);
+           }, 5000);
+        }
       }
     }
 

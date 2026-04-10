@@ -75,7 +75,7 @@ app.post("/api/analyze-stream", upload.single("file"), async (req, res) => {
 
 app.post('/api/analyze-case', async (req, res) => {
   try {
-    const { sessionId, transcriptText, previousAnalysis, lastProcessedFile, isFinal } = req.body;
+    const { sessionId, transcriptText, contextTranscriptText, previousAnalysis, lastProcessedFile, isFinal } = req.body;
     if (!sessionId) return res.status(400).json({ ok: false, error: 'missing_sessionId' });
 
     const baseDir = path.resolve(process.cwd(), "..", "screen-catch", "data", sessionId);
@@ -138,7 +138,7 @@ app.post('/api/analyze-case', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'no_new_content' });
     }
 
-    const analysis = await analyzeCaseContent(validImages, transcriptText || '', previousAnalysis);
+    const analysis = await analyzeCaseContent(validImages, transcriptText || '', contextTranscriptText, previousAnalysis);
 
     res.json({ 
       ok: true, 

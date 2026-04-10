@@ -142,12 +142,13 @@ body {
   word-break: break-word;
   overflow-wrap: anywhere;
   line-height: 1.6;
-  font-size: 14px;
-  color: #111111;
-  background: var(--bg-gray);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 16px;
+  font-size: 15px;
+  color: #333333;
+  /* 腾讯会议主题背景：浅雅的蓝灰底色 */
+  background: #F4F8FF;
+  border: 1px solid #D6E4FF;
+  border-radius: 8px;
+  padding: 16px 20px;
   max-height: 60vh;
   overflow-y: auto;
   overflow-x: hidden;
@@ -164,79 +165,111 @@ body {
 
 .md h1,
 .md h2,
-.md h3 {
-  margin: 16px 0 12px;
+.md h3,
+.md h4,
+.md h5 {
+  margin: 1.5em 0 0.8em;
   color: #111111;
   font-weight: 600;
+  line-height: 1.25;
 }
 
+.md h1 { font-size: 1.6em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
+.md h2 { font-size: 1.4em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
+.md h3 { font-size: 1.2em; }
+.md h4 { font-size: 1.1em; }
+
 .md p {
-  margin: 12px 0;
+  margin: 1em 0;
 }
 
 .md ul,
 .md ol {
-  margin: 12px 0;
-  padding-left: 24px;
+  margin: 1em 0;
+  padding-left: 2em;
+}
+
+.md li {
+  margin: 0.3em 0;
+}
+
+.md li > p {
+  margin: 0.3em 0;
+}
+
+.md strong {
+  font-weight: 600;
+  color: #000;
+}
+
+.md em {
+  font-style: italic;
 }
 
 .md code {
   font-family: Consolas, Monaco, "Courier New", monospace;
-  font-size: 13px;
+  font-size: 0.9em;
   background: rgba(0, 0, 0, 0.05);
-  color: var(--primary-color);
-  padding: 2px 6px;
-  border-radius: 4px;
+  color: var(--danger-color);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
   word-break: break-word;
   white-space: pre-wrap;
 }
 
 .md pre {
-  background: #111111;
-  color: #F2F3F5;
-  padding: 12px 16px;
-  border-radius: 6px;
-  overflow-x: hidden;
-  overflow-y: auto;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  max-width: 100%;
+  margin: 1em 0;
 }
 
 .md pre code {
   background: transparent;
   color: inherit;
   padding: 0;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .md blockquote {
-  margin: 12px 0;
-  padding: 8px 12px;
-  border-left: 4px solid var(--border-color);
-  background: #FFFFFF;
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-left: 4px solid var(--primary-color);
+  background: var(--bg-gray);
   color: var(--text-secondary);
+}
+
+.md blockquote p {
+  margin: 0;
 }
 
 .md table {
   border-collapse: collapse;
   width: 100%;
-  margin: 12px 0;
+  margin: 1em 0;
   display: block;
   overflow-x: auto;
-  word-break: break-word;
+  word-break: normal;
 }
 
 .md th,
 .md td {
   border: 1px solid var(--border-color);
-  padding: 8px 12px;
+  padding: 10px 14px;
   vertical-align: top;
   font-size: 14px;
 }
 
 .md th {
-  background: #FAFAFA;
+  background: var(--bg-gray);
   font-weight: 600;
 }
 
@@ -247,6 +280,14 @@ body {
 
 .md a:hover {
   text-decoration: underline;
+}
+
+.md hr {
+  height: 1px;
+  padding: 0;
+  margin: 24px 0;
+  background-color: var(--border-color);
+  border: 0;
 }
 
 .error {

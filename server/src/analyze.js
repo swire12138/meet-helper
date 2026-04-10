@@ -102,18 +102,24 @@ async function streamMarkdownSection({ section, messages, res }) {
   };
 }
 
-export async function analyzeCaseContent(images, transcriptText, previousAnalysis) {
+export async function analyzeCaseContent(images, transcriptText, contextTranscriptText, previousAnalysis) {
   const client = createQwenClient();
   const schemaStr = JSON.stringify(OUTPUT_SCHEMA, null, 2);
   const contentArray = [];
 
   let prevStr = previousAnalysis;
   if (typeof previousAnalysis === "object" && previousAnalysis !== null) {
-    prevStr = JSON.stringify(previousAnalysis, null, 2);
+    prevStr = JSON.stringify({
+      participantsAndViewpointsMd: previousAnalysis.participantsAndViewpointsMd,
+      topicsReportMd: previousAnalysis.topicsReportMd,
+      followUpQuestionsMd: previousAnalysis.followUpQuestionsMd,
+      glossaryMd: previousAnalysis.glossaryMd
+    }, null, 2);
   }
 
   if (prevStr) {
-    contentArray.push({ type: "text", text: `这是前次分析的结果（JSON格式）：\n\n${prevStr}\n\n` });
+    contentArray.push({ type: "text", text: `这是前次生成的分析总结结果（不包含历史转写原文）：\n\n${prevStr}\n\n` });
+    contentArray.push({ type: "text", text: `这是为了保持连贯性提供的上一段转写上下文：\n${contextTranscriptText || '（无上下文）'}\n\n` });
     contentArray.push({ type: "text", text: `以下是最新增加的会议语音转写记录：\n${transcriptText || '（无新增转写）'}\n\n` });
     contentArray.push({ type: "text", text: `以下是最新增加的会议截屏（附带截屏时间）：` });
   } else {
@@ -136,7 +142,7 @@ export async function analyzeCaseContent(images, transcriptText, previousAnalysi
     `- JSON必须严格符合以下键结构，值全部为Markdown字符串：`,
     schemaStr,
     `- 五个字段分别对应前端独立板块展示，内容不要互相混杂：`,
-    `  correctedTranscriptMd: 修正后的转写（按时间顺序，尽量保留说话人/时间戳/段落）。`,
+    `  correctedTranscriptMd: 仅针对本次新增的转写内容进行修正。务必保持原有的格式（按时间顺序，严格保留并输出时间戳、说话人和段落结构），每句话必须单独一行，绝对不能把它们合并成一长段文字。注意：直接输出纯文本，千万不要使用 \`\`\` 任何代码块标记包裹！不要带入“上下文”或以前的对话，因为前端会自动拼接它。`,
     `  participantsAndViewpointsMd: 参与者与观点（每人单独小节，包含其对各议题的立场/理解与变化）。`,
     `  topicsReportMd: 议题报告（按时间顺序逐议题展开，必须包含：初始现状、讨论过程关键点、最终共识、前后差异、引用原话/片段）。`,
     `  followUpQuestionsMd: 追问清单（按议题组织，标注提问对象、问题、期待回答）。`,
@@ -144,7 +150,11 @@ export async function analyzeCaseContent(images, transcriptText, previousAnalysi
   ];
 
   if (prevStr) {
-    outputReq.push(`\n重要约束：请在“前次分析的结果”基础上进行更新和追加。如果新的信息补充了前面的内容，请追加；如果新的信息推翻或修改了前面的结论，请对前文进行修正。如果无明显变化，保持原样。你输出的 JSON 必须包含完整的、最新的五个字段。`);
+    outputReq.push(`\n重要约束：
+1. 请在“前次生成的分析总结结果”基础上，结合新增内容进行全局更新。
+2. 【极端重要】对于 \`correctedTranscriptMd\`，你只需要输出【最新增加的会议语音转写记录】的修正版（且只能针对这部分字数），千万不要把前次分析里的、或者上下文里的内容再重新输出一遍！因为我会在系统外部把你的输出和历史记录直接拼接，如果你重复输出了，会导致页面上出现大量的重复文本。
+3. 对于其他 4 个分析字段（参与者、议题、追问、术语表），请综合前次结果与新增内容，输出一份【包含之前所有内容的完整更新版】的报告。如果有新的观点或议题，请合理插入或追加到相应部分。
+4. 如果除了转写外，其他分析字段无明显变化，保持前次分析的内容原样输出即可。`);
   }
 
   contentArray.push({ type: "text", text: outputReq.join("\n") });
@@ -166,7 +176,7 @@ export async function analyzeCaseContent(images, transcriptText, previousAnalysi
     model: "qwen-vl-max",
     messages,
     temperature: 0.2,
-    max_tokens: maxTokens || 4000
+    max_tokens: maxTokens || 8192
   });
 
   const raw = resp.choices?.[0]?.message?.content ?? "";
