@@ -81,42 +81,47 @@ app.post('/api/analyze-case', async (req, res) => {
     const baseDir = path.resolve(process.cwd(), "..", "screen-catch", "data", sessionId);
     const picsDir = path.join(baseDir, "pics");
 
-    if (!fs.existsSync(picsDir)) {
-      return res.status(400).json({ ok: false, error: 'pics_dir_not_found' });
+    let files = [];
+    if (fs.existsSync(picsDir)) {
+      files = await fs.promises.readdir(picsDir);
+      files = files.filter(f => f.endsWith('.png')).sort();
     }
 
-    const files = fs.readdirSync(picsDir).filter(f => f.endsWith('.png')).sort();
-    if (files.length === 0) {
-      return res.status(400).json({ ok: false, error: 'not_enough_screenshots' });
+    if (lastProcessedFile) {
+      const idx = files.indexOf(lastProcessedFile);
+      if (idx !== -1) {
+        files = files.slice(idx + 1);
+      }
     }
 
     const validImages = [];
     let prevSize = -1;
-    let lastFileFound = !lastProcessedFile;
     let latestProcessedFilename = lastProcessedFile;
+
+    // Optional: Pre-fetch prevSize if we have a lastProcessedFile
+    if (lastProcessedFile) {
+      try {
+        const lastStats = await fs.promises.stat(path.join(picsDir, lastProcessedFile));
+        prevSize = lastStats.size;
+      } catch (err) {}
+    }
 
     for (const f of files) {
       const picPath = path.join(picsDir, f);
       try {
-        const stats = fs.statSync(picPath);
+        const stats = await fs.promises.stat(picPath);
         const currSize = stats.size;
         if (currSize < 1024) continue; // Skip invalid or empty images
 
         if (prevSize !== -1) {
           const diffRatio = Math.abs(currSize - prevSize) / prevSize;
           if (diffRatio < 0.005) {
+            latestProcessedFilename = f; // Even if skipped, update the pointer so we don't scan it again
             continue;
           }
         }
         
         prevSize = currSize;
-
-        if (!lastFileFound) {
-          if (f === lastProcessedFile) {
-            lastFileFound = true;
-          }
-          continue;
-        }
 
         let timeStr = "未知时间";
         const match = f.match(/screenshot-(.+)\.png/);
@@ -124,7 +129,8 @@ app.post('/api/analyze-case', async (req, res) => {
           timeStr = match[1].replace('T', ' ').replace(/-(\d{2})-(\d{2})-(\d{3}Z)$/, ':$1:$2.$3');
         }
         
-        const imageBase64 = fs.readFileSync(picPath).toString('base64');
+        const imageBuffer = await fs.promises.readFile(picPath);
+        const imageBase64 = imageBuffer.toString('base64');
         const imageUrl = `data:image/png;base64,${imageBase64}`;
         
         validImages.push({ time: timeStr, imageUrl });
@@ -149,8 +155,10 @@ app.post('/api/analyze-case', async (req, res) => {
       } 
     });
   } catch (e) {
+    console.error("====== 案例分析捕获到全局错误 ======");
     console.error(e);
-    res.status(500).json({ ok: false, error: 'server_error' });
+    console.error("====================================");
+    res.status(500).json({ ok: false, error: 'server_error', message: e.message || 'unknown_error' });
   }
 });
 

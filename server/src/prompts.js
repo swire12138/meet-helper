@@ -24,7 +24,7 @@ export function buildAnalyzeMessages(transcriptText) {
     "- JSON必须严格符合以下键结构，值全部为Markdown字符串：",
     schemaStr,
     "- 五个字段分别对应前端独立板块展示，内容不要互相混杂：",
-    "  correctedTranscriptMd: 修正后的转写（按时间顺序，尽量保留说话人/时间戳/段落）。",
+    "  correctedTranscriptMd: (此字段已在前端暂时屏蔽，你可以返回空字符串以节省时间，因为不再展示)",
     "  participantsAndViewpointsMd: 参与者与观点（每人单独小节，包含其对各议题的立场/理解与变化）。",
     "  topicsReportMd: 议题报告（按时间顺序逐议题展开，必须包含：初始现状、讨论过程关键点、最终共识、前后差异、引用原话/片段）。",
     "  followUpQuestionsMd: 追问清单（按议题组织，标注提问对象、问题、期待回答）。",
@@ -79,10 +79,10 @@ export function buildCorrectTranscriptMessages(transcriptText) {
   ];
 }
 
-export function buildParticipantsMessages(correctedTranscriptMd) {
+export function buildParticipantsMessages(transcriptText) {
   const system = [
     "你是一个会议旁听Agent。",
-    "输入是已经校对过的会议转写（Markdown）。",
+    "输入是一份会议的实时转写记录（Markdown）。",
     "",
     "你的任务：识别参与者，并总结每个人的技术理解、观点与变化。",
     "",
@@ -94,14 +94,14 @@ export function buildParticipantsMessages(correctedTranscriptMd) {
 
   return [
     { role: "system", content: system },
-    { role: "user", content: correctedTranscriptMd }
+    { role: "user", content: transcriptText }
   ];
 }
 
-export function buildTopicsReportMessages(correctedTranscriptMd) {
+export function buildTopicsReportMessages(transcriptText) {
   const system = [
     "你是一个会议旁听Agent。",
-    "输入是已经校对过的会议转写（Markdown）。",
+    "输入是一份会议的实时转写记录（Markdown）。",
     "",
     "你的任务：理解有多少议题，并生成技术报告，按讨论时间顺序，不限字数，尽量详细。",
     "",
@@ -119,21 +119,23 @@ export function buildTopicsReportMessages(correctedTranscriptMd) {
 
   return [
     { role: "system", content: system },
-    { role: "user", content: correctedTranscriptMd }
+    { role: "user", content: transcriptText }
   ];
 }
 
-export function buildFollowUpQuestionsMessages(correctedTranscriptMd) {
+export function buildFollowUpQuestionsMessages(transcriptText) {
   const system = [
     "你是一个会议旁听Agent。",
-    "输入是已经校对过的会议转写（Markdown）。",
+    "输入是一份会议的实时转写记录（Markdown）。",
     "",
     "你的任务：审查技术实现细节和辩论过程，找出需要更正或不清楚的地方，生成追问清单。",
+    "【极其重要】：你必须提出怀疑有错误、逻辑有冲突、或与大方向（架构/场景适用性等）有关的高维技术探讨问题！不要去抠字眼（例如不要问“通信量减少85是什么指标/单位是什么”这类细枝末节）。",
+    "而应该像架构师一样提问（例如：“他这个算法对prefill阶段应该有用，但对decode阶段呢？” 或 “改为sharememory base后，开空间能开对吗？”）。",
     "",
     "追问必须包含：",
-    "- 对谁提问（具体到人）",
-    "- 提问内容是什么（明确、可操作）",
-    "- 期待对方回答哪方面（例如：数据/实现细节/边界条件/风险评估/决策依据）",
+    "- 提问对象（具体到人）",
+    "- 原始问题（明确、可操作的高维探讨）",
+    "- 提问原因（为什么要问这个问题，逻辑冲突点或架构疑虑点在哪）",
     "",
     "输出要求：",
     "- 只输出Markdown，不要输出任何额外解释。",
@@ -143,14 +145,14 @@ export function buildFollowUpQuestionsMessages(correctedTranscriptMd) {
 
   return [
     { role: "system", content: system },
-    { role: "user", content: correctedTranscriptMd }
+    { role: "user", content: transcriptText }
   ];
 }
 
-export function buildGlossaryMessages(correctedTranscriptMd) {
+export function buildGlossaryMessages(transcriptText) {
   const system = [
     "你是一个会议旁听Agent。",
-    "输入是已经校对过的会议转写（Markdown）。",
+    "输入是一份会议的实时转写记录（Markdown）。",
     "",
     "你的任务：对会议中出现的专业名词做术语表，并辅以解释。",
     "",
@@ -162,6 +164,6 @@ export function buildGlossaryMessages(correctedTranscriptMd) {
 
   return [
     { role: "system", content: system },
-    { role: "user", content: correctedTranscriptMd }
+    { role: "user", content: transcriptText }
   ];
 }

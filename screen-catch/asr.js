@@ -24,8 +24,18 @@ export function setupAsrSocket(server) {
 
     const apiKey = process.env.QWEN_API_KEY;
 
+    const safeWsSend = (obj) => {
+      if (ws.readyState === 1) { // WebSocket.OPEN
+        try {
+          ws.send(JSON.stringify(obj));
+        } catch (e) {
+          console.error("ws.send error:", e);
+        }
+      }
+    };
+
     if (!apiKey) {
-      ws.send(JSON.stringify({ type: "error", message: "Missing QWEN_API_KEY in .env" }));
+      safeWsSend({ type: "error", message: "Missing QWEN_API_KEY in .env" });
       ws.close();
       return;
     }
@@ -78,7 +88,7 @@ export function setupAsrSocket(server) {
       try {
         fs.appendFileSync(transcriptFile, lineText, "utf8");
         console.log("ASR fallback transcript bytes:", Buffer.byteLength(lineText, "utf8"));
-        ws.send(JSON.stringify({ type: "sentence", text, speakerId: speakerLabel }));
+        safeWsSend({ type: "sentence", text, speakerId: speakerLabel });
       } catch (err) {
         console.error("Error writing fallback transcript file:", err);
       }
@@ -108,59 +118,68 @@ export function setupAsrSocket(server) {
 
       const outputReader = readline.createInterface({ input: asrProcess.stdout });
       outputReader.on("line", (line) => {
-        if (!line) return;
-        let msg;
         try {
-          msg = JSON.parse(line);
-        } catch {
-          return;
-        }
-        const type = msg?.type;
-        if (type === "ready") {
-          ws.send(JSON.stringify({ type: "ready" }));
-          console.log("Python ASR ready");
-          return;
-        }
-        if (type === "partial") {
-          const text = sanitizeText(msg.text || "");
-          if (text) {
-            latestPartialText = text;
-          }
-          ws.send(JSON.stringify({
-            type: "partial",
-            text,
-            time: msg.time || 0
-          }));
-          return;
-        }
-        if (type === "sentence") {
-          sentenceWritten = true;
-          const text = sanitizeText(msg.text || "");
-          const speakerLabel = mapSpeakerLabel(msg.speakerId);
-          const lineText = `[${speakerLabel}] ${text}\n`;
+          if (!line) return;
+          let msg;
           try {
-            fs.appendFileSync(transcriptFile, lineText, "utf8");
-            console.log("ASR sentence transcript bytes:", Buffer.byteLength(lineText, "utf8"));
-          } catch (err) {
-            console.error("Error writing transcript file:", err);
+            msg = JSON.parse(line);
+          } catch {
+            return;
           }
-          ws.send(JSON.stringify({
-            type: "sentence",
-            text,
-            speakerId: speakerLabel
-          }));
-          return;
+          const type = msg?.type;
+          if (type === "ready") {
+            safeWsSend({ type: "ready" });
+            console.log("Python ASR ready");
+            return;
+          }
+          if (type === "partial") {
+            const text = sanitizeText(msg.text || "");
+            if (text) {
+              latestPartialText = text;
+            }
+            safeWsSend({
+              type: "partial",
+              text,
+              time: msg.time || 0
+            });
+            return;
+          }
+          if (type === "sentence") {
+            sentenceWritten = true;
+            const text = sanitizeText(msg.text || "");
+            // 哪怕过滤后是空字符串，也应该告诉前端，让前端知道这部分处理完了，否则前端可能卡死或丢失状态
+            const speakerLabel = mapSpeakerLabel(msg.speakerId);
+            if (text) {
+              const lineText = `[${speakerLabel}] ${text}\n`;
+              try {
+                fs.appendFile(transcriptFile, lineText, "utf8", (err) => {
+                  if (err) console.error("Error writing transcript file:", err);
+                  else console.log("ASR sentence transcript bytes:", Buffer.byteLength(lineText, "utf8"));
+                });
+              } catch (err) {
+                console.error("Error writing transcript file:", err);
+              }
+              safeWsSend({
+                type: "sentence",
+                text,
+                speakerId: speakerLabel
+              });
+            }
+            return;
+          }
+          if (type === "completed") {
+            flushFallbackText();
+            safeWsSend({ type: "completed", file: transcriptFile });
+            return;
+          }
+          if (type === "error") {
+            const message = msg.message || "ASR bridge error";
+            console.error("Python ASR error:", message);
+            safeWsSend({ type: "error", message });
+          }
+        } catch (innerError) {
+           console.error("ASR outputReader line processing error:", innerError);
         }
-        if (type === "completed") {
-          flushFallbackText();
-          ws.send(JSON.stringify({ type: "completed", file: transcriptFile }));
-          return;
-        }
-        if (type === "error") {
-          const message = msg.message || "ASR bridge error";
-          console.error("Python ASR error:", message);
-          ws.send(JSON.stringify({ type: "error", message }));
-        };
       });
 
       asrProcess.stderr.on("data", (chunk) => {
@@ -173,14 +192,14 @@ export function setupAsrSocket(server) {
       asrProcess.on("close", (code) => {
         flushFallbackText();
         console.log("Python ASR process closed:", code);
-        if (code !== 0 && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: "error", message: "ASR bridge process exited unexpectedly" }));
+        if (code !== 0) {
+          safeWsSend({ type: "error", message: "ASR bridge process exited unexpectedly" });
         }
       });
 
     } catch (e) {
       console.error("ASR Init Error:", e);
-      ws.send(JSON.stringify({ type: "error", message: "ASR Init Error" }));
+      safeWsSend({ type: "error", message: "ASR Init Error" });
     }
 
     let audioPacketCount = 0;

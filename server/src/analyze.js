@@ -117,13 +117,29 @@ export async function analyzeCaseContent(images, transcriptText, contextTranscri
     }, null, 2);
   }
 
+  // 提前在这里声明并处理好截断版本，保证 Agent 1 和 Agent 2 都能访问到
+  let trimmedPrevStr = prevStr || "";
+  if (trimmedPrevStr.length > 20000) {
+    trimmedPrevStr = trimmedPrevStr.slice(-20000) + "\n...（因长度限制已截断部分早期历史总结）";
+  }
+
+  let trimmedContext = contextTranscriptText || '';
+  if (trimmedContext.length > 8000) {
+    trimmedContext = "...\n" + trimmedContext.slice(-8000);
+  }
+
+  let trimmedTranscript = transcriptText || '';
+  if (trimmedTranscript.length > 10000) {
+    trimmedTranscript = "...\n" + trimmedTranscript.slice(-10000);
+  }
+
   if (prevStr) {
-    contentArray.push({ type: "text", text: `这是前次生成的分析总结结果（不包含历史转写原文）：\n\n${prevStr}\n\n` });
-    contentArray.push({ type: "text", text: `这是为了保持连贯性提供的上一段转写上下文：\n${contextTranscriptText || '（无上下文）'}\n\n` });
-    contentArray.push({ type: "text", text: `以下是最新增加的会议语音转写记录：\n${transcriptText || '（无新增转写）'}\n\n` });
+    contentArray.push({ type: "text", text: `这是前次生成的分析总结结果（不包含历史转写原文）：\n\n${trimmedPrevStr}\n\n` });
+    contentArray.push({ type: "text", text: `这是为了保持连贯性提供的上一段转写上下文：\n${trimmedContext || '（无上下文）'}\n\n` });
+    contentArray.push({ type: "text", text: `以下是最新增加的会议语音转写记录：\n${trimmedTranscript || '（无新增转写）'}\n\n` });
     contentArray.push({ type: "text", text: `以下是最新增加的会议截屏（附带截屏时间）：` });
   } else {
-    contentArray.push({ type: "text", text: `这是一场会议的语音转写记录：\n${transcriptText}\n\n以下是会议过程中的多张截屏，并附带了截屏时间：` });
+    contentArray.push({ type: "text", text: `这是一场会议的语音转写记录：\n${trimmedTranscript}\n\n以下是会议过程中的多张截屏，并附带了截屏时间：` });
   }
 
   if (images.length === 0) {
@@ -142,22 +158,28 @@ export async function analyzeCaseContent(images, transcriptText, contextTranscri
     `- JSON必须严格符合以下键结构，值全部为Markdown字符串：`,
     schemaStr,
     `- 五个字段分别对应前端独立板块展示，内容不要互相混杂：`,
-    `  correctedTranscriptMd: 仅针对本次新增的转写内容进行修正。务必保持原有的格式（按时间顺序，严格保留并输出时间戳、说话人和段落结构），每句话必须单独一行，绝对不能把它们合并成一长段文字。注意：直接输出纯文本，千万不要使用 \`\`\` 任何代码块标记包裹！不要带入“上下文”或以前的对话，因为前端会自动拼接它。`,
-    `  participantsAndViewpointsMd: 参与者与观点（每人单独小节，包含其对各议题的立场/理解与变化）。`,
-    `  topicsReportMd: 议题报告（按时间顺序逐议题展开，必须包含：初始现状、讨论过程关键点、最终共识、前后差异、引用原话/片段）。`,
-    `  followUpQuestionsMd: 追问清单（按议题组织，标注提问对象、问题、期待回答）。`,
+    `  correctedTranscriptMd: (此字段已在前端暂时屏蔽，你可以返回空字符串或简略信息以节省时间，因为不再展示)`,
+    `  participantsAndViewpointsMd: 参与者与观点（每人单独小节，包含其对各议题的立场/理解与变化）。【重要】：这部分必须在旧有总结的基础上扩充，绝对不能缩略、删减或丢弃前次分析中已经存在的历史人员和观点！`,
+    `  topicsReportMd: 议题报告（按时间顺序逐议题展开，必须包含：初始现状、讨论过程关键点、最终共识、前后差异、引用原话/片段）。【极其重要】：像写流水账一样往下写，这部分必须在旧有总结的基础上扩充，绝对不能缩略、删减或丢弃前次分析中已经存在的历史议题和报告！如果有新议题，追加在后面。`,
+    `  followUpQuestionsMd: 追问清单（按议题组织，包含：提问对象、原始问题、提问原因）。【极其重要】：你必须提出怀疑有错误、逻辑有冲突、或与大方向（架构/场景适用性等）有关的高维技术探讨问题！不要去抠字眼（例如不要问“通信量减少85是什么指标/单位是什么”这类细枝末节）。而应该像架构师一样提问（例如：“他这个算法对prefill阶段应该有用，但对decode阶段呢？” 或 “改为sharememory base后，开空间能开对吗？”）。【极其重要】：这部分必须在旧有清单的基础上扩充，绝对不能缩略、删减或丢弃前次分析中已经存在的历史追问问题！`,
     `  glossaryMd: 术语表（按字母或拼音或出现顺序均可，每项给出解释与在本会议中的语境）。`
   ];
 
   if (prevStr) {
     outputReq.push(`\n重要约束：
 1. 请在“前次生成的分析总结结果”基础上，结合新增内容进行全局更新。
-2. 【极端重要】对于 \`correctedTranscriptMd\`，你只需要输出【最新增加的会议语音转写记录】的修正版（且只能针对这部分字数），千万不要把前次分析里的、或者上下文里的内容再重新输出一遍！因为我会在系统外部把你的输出和历史记录直接拼接，如果你重复输出了，会导致页面上出现大量的重复文本。
-3. 对于其他 4 个分析字段（参与者、议题、追问、术语表），请综合前次结果与新增内容，输出一份【包含之前所有内容的完整更新版】的报告。如果有新的观点或议题，请合理插入或追加到相应部分。
+2. 【极端重要】对于 \`correctedTranscriptMd\`，(前端已屏蔽，直接返回空字符串即可)。
+3. 对于其他 4 个分析字段（参与者、议题、追问、术语表），请综合前次结果与新增内容，输出一份【包含之前所有内容的完整更新版】的报告。
+   【极其重要警告】：你绝对、绝对不能为了“简明扼要”而删掉前次结果中已经列出的历史人员、历史观点、历史议题或历史追问！所有的历史信息必须原封不动地保留（除非发现了确凿的错误需要修正）。如果有新的观点或议题，请合理插入或追加到相应部分。
 4. 如果除了转写外，其他分析字段无明显变化，保持前次分析的内容原样输出即可。`);
   }
 
   contentArray.push({ type: "text", text: outputReq.join("\n") });
+
+  const { model, maxTokens } = getQwenConfig();
+  
+  // 如果没有新增截屏，退回到使用配置中的普通文本大模型，以防 qwen-vl 报错无图
+  const targetModel = images.length === 0 ? model : "qwen-vl-max";
 
   const messages = [
     {
@@ -166,35 +188,89 @@ export async function analyzeCaseContent(images, transcriptText, contextTranscri
     },
     {
       role: "user",
-      content: contentArray
+      content: targetModel === "qwen-vl-max" ? contentArray : contentArray.map(c => c.text).join("\n")
     }
   ];
 
-  const { maxTokens } = getQwenConfig();
-
   const resp = await client.chat.completions.create({
-    model: "qwen-vl-max",
+    model: targetModel,
     messages,
     temperature: 0.2,
     max_tokens: maxTokens || 8192
   });
 
-  const raw = resp.choices?.[0]?.message?.content ?? "";
-  const extracted = extractLikelyJsonObject(raw) ?? raw;
-  const parsed = safeJsonParse(extracted);
-  if (parsed.ok) {
-    return parsed.value;
-  }
+    const raw = resp.choices?.[0]?.message?.content ?? "";
+    let extracted = extractLikelyJsonObject(raw) ?? raw;
+    let parsed = safeJsonParse(extracted);
+    
+    if (!parsed.ok) {
+      // 增加一行正则替换：如果模型在 JSON 中输出了不合法的转义换行符或结尾多余逗号，尝试先用模型自我修复
+      const fixedRaw = await completeJson(buildFixJsonMessages(raw));
+      extracted = extractLikelyJsonObject(fixedRaw) ?? fixedRaw;
+      parsed = safeJsonParse(extracted);
+    }
+  
+    if (parsed.ok) {
+      // ===== Agent 2: Evaluate Follow-Up Questions =====
+      if (parsed.value.followUpQuestionsMd) {
+        const evalPrompt = `你是一个会议纪要审查专家 (Agent 2)。
+以下是会议的一段历史转写和总结上下文：
+${trimmedPrevStr || "（无）"}
 
-  const fixedRaw = await completeJson(buildFixJsonMessages(raw));
-  const fixedExtracted = extractLikelyJsonObject(fixedRaw) ?? fixedRaw;
-  const parsed2 = safeJsonParse(fixedExtracted);
-  if (parsed2.ok) {
-    return parsed2.value;
-  }
+这是本次新增的会议转写内容：
+${trimmedTranscript}
 
-  throw new Error("Failed to generate valid JSON analysis");
-}
+Agent 1 提出了以下追问清单（Markdown 格式）：
+${parsed.value.followUpQuestionsMd}
+
+任务要求：
+1. 仔细阅读上下文和新增转写，判断 Agent 1 提出的每个问题是否能用现有的会议信息进行解答。
+2. **【极其重要】：千万不要删除任何问题！所有问题都必须保留在列表中！**
+3. **【鼓励解答】：请你尽最大努力、基于上下文进行合理推导和解答！只要会议上下文中能找到相关的线索、合理的解释、或者大方向上能够回答这个疑问，就请判定为“可解答”。不要因为缺少某个极端细节就轻易判定为“信息不足”。只有在完全找不到线索、或者是涉及尚未讨论的全新架构领域时，才标注为“信息不足”。**
+4. 你必须将每一个问题重新格式化为以下固定结构的 Markdown 列表，包含所有 6 个必备字段。
+
+请严格使用以下格式输出每个问题（可以有小标题进行议题分类）：
+
+- **提问对象**：[具体到人]
+- **原始问题**：[Agent 1 提出的原始问题内容]
+- **提问原因**：[为什么要问这个问题，期待什么维度的回答]
+- **状态标签**：[如果是可以通过现有信息解答的，填入：**[可解答，仅展示不提问]**；如果信息不足必须提问的，填入：**[信息不足，需继续追问]**]
+- **状态原因**：[为什么能解答并且答案是什么？或者为什么不能解答且当前缺失了什么信息？]
+- **优化后问题**：[如果标签是“信息不足，需继续追问”，请提供优化后的探讨性柔和问题（如：“想请教一下...”）。如果标签是“可解答”，此项填“无”。]
+
+返回修改后的完整追问清单（必须是合法的 Markdown 格式，不要删除任何问题），严格遵守上述的字段结构，不要输出多余的解释。`;
+
+        const evalResp = await client.chat.completions.create({
+          model: "qwen-plus", // Use standard text model for evaluation
+          messages: [
+            { role: "system", content: "你是一个专业的会议问答审查助手。" },
+            { role: "user", content: evalPrompt }
+          ],
+          temperature: 0.1,
+          max_tokens: 8192
+        });
+        
+        const evaluatedQuestions = evalResp.choices?.[0]?.message?.content ?? "";
+        if (evaluatedQuestions.trim()) {
+          parsed.value.followUpQuestionsMd = evaluatedQuestions.trim();
+        }
+      }
+      // =================================================
+  
+      return parsed.value;
+    }
+  
+    // 即使解析失败，我们也不直接报错中断整个会议，而是返回一个部分成功的默认结构，或者打平抛出
+    console.error("JSON Parse failed after fix:", parsed.error, "RAW:", raw);
+    
+    // 如果之前有数据，退回使用之前的数据
+    if (typeof previousAnalysis === "object" && previousAnalysis !== null) {
+      return previousAnalysis;
+    }
+    
+    // 否则抛出明确的错误，告知前端发生了 JSON 解析失败
+    throw new Error(`Failed to generate valid JSON analysis. Parse Error: ${parsed.error?.message || "unknown"}`);
+  }
 
 export async function analyzeTranscriptStream(transcriptText, res) {
   const runStartedAt = Date.now();
@@ -202,20 +278,17 @@ export async function analyzeTranscriptStream(transcriptText, res) {
 
   writeNdjson(res, { type: "log", ts: nowIso(), message: "读取转写文本完成" });
 
-  const corrected = await streamMarkdownSection({
-    section: "correctedTranscriptMd",
-    messages: buildCorrectTranscriptMessages(transcriptText),
-    res
-  });
-  if (globalFirstTokenAt === null && corrected.firstTokenAt !== null) {
-    globalFirstTokenAt = corrected.firstTokenAt;
+  // 暂时屏蔽由大模型生成修正后的转写，直接使用原始的实时转写内容
+  // 并且将后续的依赖全部替换为原始的实时转写 (transcriptText)，保证其他功能正常运行
+  const correctedTranscriptMd = transcriptText;
+  if (globalFirstTokenAt === null) {
+    globalFirstTokenAt = Date.now();
   }
-  const correctedTranscriptMd = corrected.content;
 
   const participantsAndViewpointsMd = (
     await streamMarkdownSection({
       section: "participantsAndViewpointsMd",
-      messages: buildParticipantsMessages(correctedTranscriptMd),
+      messages: buildParticipantsMessages(transcriptText),
       res
     })
   ).content;
@@ -223,7 +296,7 @@ export async function analyzeTranscriptStream(transcriptText, res) {
   const topicsReportMd = (
     await streamMarkdownSection({
       section: "topicsReportMd",
-      messages: buildTopicsReportMessages(correctedTranscriptMd),
+      messages: buildTopicsReportMessages(transcriptText),
       res
     })
   ).content;
@@ -231,7 +304,7 @@ export async function analyzeTranscriptStream(transcriptText, res) {
   const followUpQuestionsMd = (
     await streamMarkdownSection({
       section: "followUpQuestionsMd",
-      messages: buildFollowUpQuestionsMessages(correctedTranscriptMd),
+      messages: buildFollowUpQuestionsMessages(transcriptText),
       res
     })
   ).content;

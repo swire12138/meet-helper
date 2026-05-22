@@ -163,7 +163,6 @@ createApp({
     let asrSocket = null;
     const transcriptLines = ref([]);
     const transcriptDraft = ref("");
-    let fullPcmSamples = [];
     let isStoppingCapture = false;
 
     let currentSessionId = null;
@@ -191,72 +190,12 @@ createApp({
       return content.length ? content.join("\n") : "暂无";
     }
 
-    function pcmSamplesToWavBase64(samples, sampleRate = 16000) {
-      const pcm = new Int16Array(samples.length);
-      for (let i = 0; i < samples.length; i++) {
-        const s = Math.max(-1, Math.min(1, samples[i]));
-        pcm[i] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
-      }
-      const dataSize = pcm.byteLength;
-      const header = new ArrayBuffer(44);
-      const view = new DataView(header);
-      const writeStr = (offset, str) => {
-        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-      };
-      writeStr(0, "RIFF");
-      view.setUint32(4, 36 + dataSize, true);
-      writeStr(8, "WAVE");
-      writeStr(12, "fmt ");
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, 1, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * 2, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      writeStr(36, "data");
-      view.setUint32(40, dataSize, true);
-
-      const wav = new Uint8Array(44 + dataSize);
-      wav.set(new Uint8Array(header), 0);
-      wav.set(new Uint8Array(pcm.buffer), 44);
-      let binary = "";
-      for (let i = 0; i < wav.length; i++) binary += String.fromCharCode(wav[i]);
-      return btoa(binary);
-    }
-
-    async function finalizeSpeakerDiarization() {
-      if (!currentSessionId || fullPcmSamples.length === 0) return;
-      try {
-        pushLog("开始离线说话人分离回填...");
-        const audioWavBase64 = pcmSamplesToWavBase64(fullPcmSamples, 16000);
-        const r = await fetch("/api/asr/finalize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: currentSessionId, audioWavBase64 })
-        });
-        const result = await r.json();
-        if (!result?.ok) {
-          pushLog(`离线分离失败: ${result?.error || "unknown_error"}`);
-          return;
-        }
-        if (Array.isArray(result.lines)) {
-          transcriptLines.value = result.lines.slice();
-          transcriptDraft.value = "";
-        }
-        pushLog(`离线分离完成，识别到${result?.speakerCount ?? 0}位发言人`);
-      } catch {
-        pushLog("离线分离请求失败");
-      }
-    }
-
     async function toggleCapture() {
       if (isCapturing.value) {
         await stopCapture();
       } else {
         transcriptLines.value = [];
         transcriptDraft.value = "";
-        fullPcmSamples = [];
         caseImages.value = [];
         caseLastProcessedFile.value = null;
         caseLastProcessedTranscriptLineCount.value = 0;
@@ -373,7 +312,6 @@ createApp({
           let s = Math.max(-1, Math.min(1, inputData[i]));
           const pcmVal = s < 0 ? s * 0x8000 : s * 0x7FFF;
           pcmCache.push(pcmVal);
-          fullPcmSamples.push(pcmVal);
         }
 
         // 当积攒到约 3200 采样（约 200 毫秒的音频，16000Hz * 0.2s = 3200）时再发送
@@ -412,9 +350,9 @@ createApp({
         };
 
         isCapturing.value = true;
-        pushLog("开始截屏捕捉 (每5秒一次)...");
+        pushLog("开始截屏捕捉 (每10秒一次)...");
 
-        captureInterval = setInterval(takeScreenshot, 5000);
+        captureInterval = setInterval(takeScreenshot, 10000);
         takeScreenshot();
 
         pushLog("开启实时分析 (基于上一轮完成自动触发)...");
@@ -460,13 +398,26 @@ createApp({
         asrSocket = null;
       }
       pushLog("停止截屏与录音");
-      await finalizeSpeakerDiarization();
-      await triggerCaseAnalysis(true);
+      // 根据要求，不再执行最终案例分析
+      // await triggerCaseAnalysis(true);
       isStoppingCapture = false;
     }
 
     async function triggerCaseAnalysis(isFinal = false) {
-      if (!currentSessionId || isAnalyzing) return;
+      if (!currentSessionId) return;
+      if (isAnalyzing) {
+        if (isFinal) {
+          // 如果正在分析中，但用户点击了结束，则等待当前分析完成后再触发最后一次
+          pushLog("等待当前分析完成以执行最终分析...");
+          const checkInterval = setInterval(() => {
+            if (!isAnalyzing) {
+              clearInterval(checkInterval);
+              triggerCaseAnalysis(true);
+            }
+          }, 1000);
+        }
+        return;
+      }
       isAnalyzing = true;
       pushLog(isFinal ? "开始最终案例分析..." : "触发实时增量案例分析...");
       try {
@@ -478,10 +429,21 @@ createApp({
         }
 
         // 计算上下文长度（提取和新增内容同样行数的历史记录作为上下文参考）
-        const contextLineCount = newLines.length;
+        // 限制最多发送过去 100 行上下文，防止 payload 过于巨大超出 token 限制
+        const contextLineCount = Math.min(newLines.length, 100);
         const startIndex = Math.max(0, caseLastProcessedTranscriptLineCount.value - contextLineCount);
         const contextLines = transcriptLines.value.slice(startIndex, caseLastProcessedTranscriptLineCount.value);
         let contextTranscriptText = contextLines.join("\n");
+
+        let prevAnalysisPayload = null;
+        if (data.value) {
+          prevAnalysisPayload = {
+            participantsAndViewpointsMd: data.value.participantsAndViewpointsMd,
+            topicsReportMd: data.value.topicsReportMd,
+            followUpQuestionsMd: data.value.followUpQuestionsMd,
+            glossaryMd: data.value.glossaryMd
+          };
+        }
 
         const r = await fetch("/api/analyze-case", {
           method: "POST",
@@ -490,46 +452,35 @@ createApp({
             sessionId: currentSessionId, 
             transcriptText: newTranscriptText, // 新增转写
             contextTranscriptText: contextTranscriptText, // 上下文转写
-            previousAnalysis: data.value,
+            previousAnalysis: prevAnalysisPayload,
             lastProcessedFile: caseLastProcessedFile.value,
             isFinal
           })
         });
-        
-        // 关键修复：在这里立刻更新指针，防止并发或下一次轮询时漏掉这部分文本
-        caseLastProcessedTranscriptLineCount.value += newLines.length;
 
         const res = await r.json();
+        if (res.ok || res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
+          // 仅在请求成功或明确无新内容时更新指针，防止接口报错或被拒绝时漏掉文本
+          caseLastProcessedTranscriptLineCount.value += newLines.length;
+        }
+
         if (res.ok && res.data) {
           if (res.data.analysis) {
             // 前端自行处理增量追加
             if (data.value) {
-              // 追加：修正后的会议转写
-              if (res.data.analysis.correctedTranscriptMd) {
-                 const oldText = data.value.correctedTranscriptMd || "";
-                 let newText = res.data.analysis.correctedTranscriptMd || "";
-                 // 强行去除大模型可能包裹的 markdown 代码块标记
-                 newText = newText.replace(/^```[a-zA-Z]*\s*\n/, '').replace(/\n```\s*$/, '').trim();
-                 // 为了触发 Vue 响应式，我们需要重新赋值整个对象
-                 data.value = {
-                   ...data.value,
-                   correctedTranscriptMd: oldText + (oldText ? "\n\n" : "") + newText,
-                   participantsAndViewpointsMd: res.data.analysis.participantsAndViewpointsMd || data.value.participantsAndViewpointsMd,
-                   topicsReportMd: res.data.analysis.topicsReportMd || data.value.topicsReportMd,
-                   followUpQuestionsMd: res.data.analysis.followUpQuestionsMd || data.value.followUpQuestionsMd,
-                   glossaryMd: res.data.analysis.glossaryMd || data.value.glossaryMd
-                 };
-              } else {
-                 data.value = {
-                   ...data.value,
-                   participantsAndViewpointsMd: res.data.analysis.participantsAndViewpointsMd || data.value.participantsAndViewpointsMd,
-                   topicsReportMd: res.data.analysis.topicsReportMd || data.value.topicsReportMd,
-                   followUpQuestionsMd: res.data.analysis.followUpQuestionsMd || data.value.followUpQuestionsMd,
-                   glossaryMd: res.data.analysis.glossaryMd || data.value.glossaryMd
-                 };
-              }
+              // 暂时屏蔽掉由大模型生成修正后的会议转写，直接使用前端收集到的实时转写内容接上
+              // 保证其他依赖此字段的功能正常运行
+              data.value = {
+                ...data.value,
+                correctedTranscriptMd: transcriptLines.value.join("\n"),
+                participantsAndViewpointsMd: res.data.analysis.participantsAndViewpointsMd || data.value.participantsAndViewpointsMd,
+                topicsReportMd: res.data.analysis.topicsReportMd || data.value.topicsReportMd,
+                followUpQuestionsMd: res.data.analysis.followUpQuestionsMd || data.value.followUpQuestionsMd,
+                glossaryMd: res.data.analysis.glossaryMd || data.value.glossaryMd
+              };
             } else {
               data.value = res.data.analysis;
+              data.value.correctedTranscriptMd = transcriptLines.value.join("\n");
             }
           }
           if (res.data.images && res.data.images.length > 0) {
@@ -542,11 +493,12 @@ createApp({
         } else if (res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
           pushLog("暂无新增截屏或内容");
         } else {
-          pushLog(`案例分析失败: ${res.error || "unknown"}`);
+          pushLog(`案例分析失败: ${res.message || res.error || "unknown"}`);
         }
       } catch (e) {
         pushLog("案例分析请求出错");
       } finally {
+        // 哪怕之前出错了，isAnalyzing 也必须复位，且循环要继续
         isAnalyzing = false;
         // 如果还没有停止捕捉，且不是最后一次分析，那么排队下一次分析
         if (isCapturing.value && !isFinal) {
@@ -631,10 +583,12 @@ createApp({
       </div>
 
       <div v-if="data" class="panels">
+        <!-- 暂时屏蔽修正后的转写
         <div class="card">
           <div class="panel-title">1. 修正后的会议转写</div>
           <div class="md" v-html="renderMd(data.correctedTranscriptMd)"></div>
         </div>
+        -->
         <div class="card">
           <div class="panel-title">2. 参与者与观点</div>
           <div class="md" v-html="renderMd(data.participantsAndViewpointsMd)"></div>
