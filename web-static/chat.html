@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>同事画像对话 - 会议旁听 Agent</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="/lib/marked.min.js"></script>
+    <script src="/lib/purify.min.js"></script>
+    <style>
+      .chat-layout {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 16px;
+        height: calc(100vh - 48px);
+        max-height: 900px;
+      }
+
+      .chat-sidebar {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 16px;
+        overflow-y: auto;
+      }
+
+      .chat-main {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .chat-header {
+        padding: 16px;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .message {
+        max-width: 80%;
+        display: flex;
+        gap: 12px;
+      }
+
+      .message.user {
+        align-self: flex-end;
+        flex-direction: row-reverse;
+      }
+
+      .message-avatar {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: var(--primary-color);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 600;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+
+      .message.user .message-avatar {
+        background: var(--text-secondary);
+      }
+
+      .message-bubble {
+        background: var(--bg-gray);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 12px 16px;
+        line-height: 1.6;
+      }
+
+      .message.user .message-bubble {
+        background: #E8F0FE;
+        border-color: #B6D4FE;
+      }
+
+      .message-content {
+        font-size: 14px;
+        word-break: break-word;
+        white-space: pre-wrap;
+      }
+
+      .message-content.md {
+        max-height: none;
+        background: transparent;
+        border: none;
+        padding: 0;
+      }
+
+      .chat-input-area {
+        padding: 16px;
+        border-top: 1px solid var(--border-color);
+      }
+
+      .chat-input-wrapper {
+        display: flex;
+        gap: 12px;
+        align-items: flex-end;
+      }
+
+      .chat-input {
+        flex: 1;
+        min-height: 60px;
+        max-height: 160px;
+        resize: vertical;
+        padding: 10px 14px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+      }
+
+      .chat-input:focus {
+        border-color: var(--primary-color);
+      }
+
+      .profile-select-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .profile-select-card {
+        background: var(--bg-gray);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 12px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .profile-select-card:hover {
+        background: #E8F0FE;
+        border-color: #B6D4FE;
+      }
+
+      .profile-select-card.active {
+        background: #E8F0FE;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 1px var(--primary-color);
+      }
+
+      .profile-select-name {
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+
+      .profile-select-role {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .empty-state {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-placeholder);
+        text-align: center;
+        padding: 40px;
+      }
+
+      .empty-state-icon {
+        font-size: 48px;
+        margin-bottom: 16px;
+      }
+
+      .typing-indicator {
+        display: inline-flex;
+        gap: 4px;
+        padding: 8px 12px;
+      }
+
+      .typing-dot {
+        width: 8px;
+        height: 8px;
+        background: var(--text-placeholder);
+        border-radius: 50%;
+        animation: typing 1.4s infinite;
+      }
+
+      .typing-dot:nth-child(2) {
+        animation-delay: 0.2s;
+      }
+
+      .typing-dot:nth-child(3) {
+        animation-delay: 0.4s;
+      }
+
+      @keyframes typing {
+        0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+        30% { transform: translateY(-4px); opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="container">
+      <div class="header">
+        <div>
+          <div class="title">同事画像对话</div>
+          <div class="subtle">基于同事画像进行模拟对话</div>
+        </div>
+        <a href="/" class="btn secondary">返回首页</a>
+      </div>
+
+      <div class="chat-layout">
+        <div class="chat-sidebar">
+          <div class="panel-title">选择同事</div>
+          <div v-if="profiles.length === 0" class="hint">暂无同事画像</div>
+          <div v-else class="profile-select-list">
+            <div
+              v-for="profile in profiles"
+              :key="profile.slug"
+              :class="['profile-select-card', { active: selectedSlug === profile.slug }]"
+              @click="selectProfile(profile.slug)"
+            >
+              <div class="profile-select-name">{{ profile.name }}</div>
+              <div class="profile-select-role">{{ profile.role || '未知职位' }}</div>
+              <div class="hint" style="margin-top: 6px;">{{ profile.impression || '' }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-main">
+          <div class="chat-header">
+            <div v-if="selectedProfile" class="row">
+              <div class="panel-title" style="margin: 0;">{{ selectedProfile.name }}</div>
+              <div class="subtle">{{ selectedProfile.role || '' }}</div>
+            </div>
+            <div v-else class="subtle">请先在左侧选择一位同事</div>
+          </div>
+
+          <div class="chat-messages" ref="messagesRef">
+            <div v-if="!selectedProfile" class="empty-state">
+              <div class="empty-state-icon">💬</div>
+              <div>选择左侧的同事画像开始对话</div>
+            </div>
+
+            <div v-else-if="messages.length === 0" class="empty-state">
+              <div class="empty-state-icon">👋</div>
+              <div>你好！我是{{ selectedProfile.name }}，有什么可以帮你的？</div>
+            </div>
+
+            <div v-for="(msg, idx) in messages" :key="idx" :class="['message', msg.role]">
+              <div class="message-avatar">
+                {{ msg.role === 'user' ? '我' : selectedProfile.name.charAt(0) }}
+              </div>
+              <div class="message-bubble">
+                <div v-if="msg.role === 'user'" class="message-content">{{ msg.content }}</div>
+                <div
+                  v-else
+                  class="message-content md"
+                  v-html="renderMarkdown(msg.content)"
+                ></div>
+              </div>
+            </div>
+
+            <div v-if="isTyping" class="message assistant">
+              <div class="message-avatar">{{ selectedProfile.name.charAt(0) }}</div>
+              <div class="message-bubble">
+                <div class="typing-indicator">
+                  <div class="typing-dot"></div>
+                  <div class="typing-dot"></div>
+                  <div class="typing-dot"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-input-area">
+            <div class="chat-input-wrapper">
+              <textarea
+                v-model="inputText"
+                class="chat-input"
+                placeholder="输入消息..."
+                :disabled="!selectedProfile || isTyping"
+                @keydown="onKeyDown"
+              ></textarea>
+              <button
+                class="btn"
+                :disabled="!selectedProfile || !inputText.trim() || isTyping"
+                @click="sendMessage"
+              >
+                发送
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const { createApp, ref, computed, nextTick, watch } = Vue;
+
+      createApp({
+        setup() {
+          const profiles = ref([]);
+          const selectedSlug = ref(null);
+          const messages = ref([]);
+          const inputText = ref('');
+          const isTyping = ref(false);
+          const messagesRef = ref(null);
+
+          const selectedProfile = computed(() => {
+            return profiles.value.find(p => p.slug === selectedSlug.value);
+          });
+
+          async function loadProfiles() {
+            try {
+              const res = await fetch('/api/profiles');
+              const data = await res.json();
+              if (data.ok) {
+                profiles.value = data.data;
+              }
+            } catch (e) {
+              console.error('Failed to load profiles:', e);
+            }
+          }
+
+          function selectProfile(slug) {
+            selectedSlug.value = slug;
+            messages.value = [];
+            inputText.value = '';
+          }
+
+          function renderMarkdown(text) {
+            if (!text) return '';
+            const html = marked.parse(text);
+            return DOMPurify.sanitize(html);
+          }
+
+          function scrollToBottom() {
+            nextTick(() => {
+              if (messagesRef.value) {
+                messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
+              }
+            });
+          }
+
+          async function sendMessage() {
+            if (!selectedSlug.value || !inputText.value.trim() || isTyping.value) return;
+
+            const userText = inputText.value.trim();
+            inputText.value = '';
+
+            messages.value.push({ role: 'user', content: userText });
+            scrollToBottom();
+
+            isTyping.value = true;
+            messages.value.push({ role: 'assistant', content: '' });
+            scrollToBottom();
+
+            try {
+              const history = messages.value.slice(0, -1).map(m => ({
+                role: m.role,
+                content: m.content
+              }));
+
+              const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  slug: selectedSlug.value,
+                  messages: history
+                })
+              });
+
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = '';
+
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                  if (!line.trim()) continue;
+                  try {
+                    const data = JSON.parse(line);
+                    if (data.ok && data.delta) {
+                      messages.value[messages.value.length - 1].content += data.delta;
+                      scrollToBottom();
+                    } else if (!data.ok) {
+                      throw new Error(data.error || 'Unknown error');
+                    }
+                  } catch (e) {
+                    console.error('Parse error:', e, line);
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('Chat error:', e);
+              messages.value[messages.value.length - 1].content = '抱歉，发生了错误：' + e.message;
+            } finally {
+              isTyping.value = false;
+            }
+          }
+
+          function onKeyDown(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage();
+            }
+          }
+
+          loadProfiles();
+
+          return {
+            profiles,
+            selectedSlug,
+            selectedProfile,
+            messages,
+            inputText,
+            isTyping,
+            messagesRef,
+            selectProfile,
+            renderMarkdown,
+            sendMessage,
+            onKeyDown
+          };
+        }
+      }).mount('#app');
+    </script>
+  </body>
+</html>

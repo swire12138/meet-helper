@@ -1,6 +1,6 @@
-const { createApp, ref, onMounted, nextTick } = Vue;
+const { createApp, ref, computed, onMounted, nextTick, watch } = Vue;
 
-createApp({
+const vm = createApp({
   setup() {
     const markedLib = globalThis.marked;
     if (markedLib?.setOptions) markedLib.setOptions({ gfm: true, breaks: true });
@@ -13,6 +13,14 @@ createApp({
     const health = ref(null);
     const logs = ref([]);
     const logEl = ref(null);
+
+    const speakerNameMap = ref({});
+    const profileList = ref([]);
+    const selectedProfileSlug = ref(null);
+    const profileDetail = ref(null);
+    const editingSpeaker = ref(null);
+    const editingName = ref("");
+    const showProfilePanel = ref(false);
 
     function formatBytes(bytes) {
       if (bytes < 1024) return `${bytes} B`;
@@ -35,7 +43,6 @@ createApp({
       const source = md ?? "";
       if (!source) return "";
       let html = "";
-      // Handle the case where markedLib is an object (v4+) or function (older versions)
       try {
         if (markedLib && typeof markedLib.parse === "function") {
           html = markedLib.parse(source);
@@ -49,7 +56,6 @@ createApp({
         html = source;
       }
       
-      // Configure DOMPurify to allow standard markdown tags
       const purifyConfig = {
         ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'p', 'a', 'ul', 'ol',
           'nl', 'li', 'b', 'i', 'strong', 'em', 'strike', 'code', 'hr', 'br', 'div',
@@ -71,6 +77,144 @@ createApp({
         health.value = await r.json();
       } catch {
         health.value = null;
+      }
+    }
+
+    function applyProfiles(profiles) {
+      profileList.value = Array.isArray(profiles) ? profiles : [];
+      for (const p of profileList.value) {
+        if (p.speakerLabel && p.name) {
+          speakerNameMap.value[p.speakerLabel] = p.name;
+        }
+      }
+      if (selectedProfileSlug.value) {
+        loadProfileDetail(selectedProfileSlug.value);
+      }
+    }
+
+    async function loadProfileList() {
+      try {
+        const r = await fetch("/api/profiles");
+        const res = await r.json();
+        if (res.ok) {
+          applyProfiles(res.data);
+        }
+      } catch {}
+    }
+
+    async function loadProfileDetail(slug) {
+      try {
+        const r = await fetch(`/api/profiles/${slug}`);
+        const res = await r.json();
+        if (res.ok) {
+          profileDetail.value = res.data;
+          selectedProfileSlug.value = slug;
+        }
+      } catch {}
+    }
+
+    async function deleteProfileAction(slug) {
+      try {
+        const r = await fetch(`/api/profiles/${slug}`, { method: "DELETE" });
+        const res = await r.json();
+        if (res.ok) {
+          profileList.value = profileList.value.filter(p => p.slug !== slug);
+          if (selectedProfileSlug.value === slug) {
+            profileDetail.value = null;
+            selectedProfileSlug.value = null;
+          }
+          pushLog("已删除同事画像");
+        }
+      } catch {}
+    }
+
+    function getDisplayName(speakerLabel) {
+      return speakerNameMap.value[speakerLabel] || speakerLabel;
+    }
+
+    function startEditSpeaker(speakerLabel) {
+      editingSpeaker.value = speakerLabel;
+      editingName.value = speakerNameMap.value[speakerLabel] || "";
+    }
+
+    async function saveSpeakerName() {
+      if (!editingSpeaker.value || !editingName.value.trim()) return;
+      const speakerLabel = editingSpeaker.value;
+      const realName = editingName.value.trim();
+      try {
+        const r = await fetch("/api/profiles/name", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ speakerLabel, realName })
+        });
+        const res = await r.json();
+        if (res.ok) {
+          speakerNameMap.value[speakerLabel] = realName;
+          pushLog(`已将「${speakerLabel}」命名为「${realName}」`);
+          await loadProfileList();
+        }
+      } catch {}
+      editingSpeaker.value = null;
+      editingName.value = "";
+    }
+
+    function cancelEditSpeaker() {
+      editingSpeaker.value = null;
+      editingName.value = "";
+    }
+
+    function getDetectedSpeakers() {
+      const speakers = new Set();
+      for (const line of transcriptLines.value) {
+        const match = line.match(/\[([^\]]+)\]\s*\[([^\]]+)\]/);
+        if (match && (match[2].startsWith("发言人") || match[2] === "未知发言人")) {
+          speakers.add(match[2]);
+        }
+      }
+      return [...speakers].sort((a, b) => {
+        const numA = parseInt(a.replace("发言人", ""), 10);
+        const numB = parseInt(b.replace("发言人", ""), 10);
+        return numA - numB;
+      });
+    }
+
+    async function guessSpeakerNames() {
+      const transcriptText = transcriptLines.value.join("\n");
+      if (!transcriptText.trim()) return;
+      pushLog("正在推测发言人身份...");
+      try {
+        const knownNames = Object.entries(speakerNameMap.value).map(([speakerLabel, realName]) => ({
+          speakerLabel,
+          realName
+        }));
+        const r = await fetch("/api/profiles/guess-speakers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcriptText, knownNames })
+        });
+        const res = await r.json();
+        if (res.ok && res.data) {
+          let guessCount = 0;
+          for (const guess of res.data) {
+            if (guess.guessedName && guess.confidence !== "low") {
+              speakerNameMap.value[guess.speakerLabel] = guess.guessedName;
+              guessCount++;
+            }
+          }
+          pushLog(`推测完成：识别了 ${guessCount} 位发言人`);
+          if (guessCount > 0) {
+            for (const [label, name] of Object.entries(speakerNameMap.value)) {
+              await fetch("/api/profiles/name", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ speakerLabel: label, realName: name })
+              });
+            }
+            await loadProfileList();
+          }
+        }
+      } catch {
+        pushLog("推测发言人身份失败");
       }
     }
 
@@ -156,7 +300,6 @@ createApp({
     let videoStream = null;
     let hiddenVideo = null;
     
-    // Audio related
     let audioContext = null;
     let micStream = null;
     let audioProcessor = null;
@@ -183,7 +326,12 @@ createApp({
     }
 
     function getTranscriptDisplay() {
-      const content = transcriptLines.value.slice();
+      const content = transcriptLines.value.slice().map(line => {
+        return line.replace(/\[([^\]]+)\]\s*\[([^\]]+)\]/g, (match, ts, speaker) => {
+          const displayName = speakerNameMap.value[speaker] || speaker;
+          return `[${ts}] [${displayName}]`;
+        });
+      });
       if (transcriptDraft.value) {
         content.push(`[识别中] ${transcriptDraft.value}`);
       }
@@ -243,11 +391,8 @@ createApp({
         return;
       }
 
-      // We need PCM 16-bit 16kHz mono
       const mixedStream = dest.stream;
       const source = audioContext.createMediaStreamSource(mixedStream);
-      // 使用更现代、推荐的方式或者确保 scriptProcessor 继续工作
-      // 为了适配 DashScope 可能需要更大的 buffer size，调整大小并缓存
       window.audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
       
       const asrChunkMsFromUrl = Number(new URLSearchParams(window.location.search).get("asrChunkMs") || "200");
@@ -287,7 +432,6 @@ createApp({
           return;
         }
         
-        // 增加处理 asrReady 状态
         if (msg.type === "ready") {
            asrReady = true;
            pushLog("后端大模型准备就绪，开始发送音频...");
@@ -314,18 +458,15 @@ createApp({
           pcmCache.push(pcmVal);
         }
 
-        // 当积攒到约 3200 采样（约 200 毫秒的音频，16000Hz * 0.2s = 3200）时再发送
-        // 适当减小包体积，避免过长导致实时性变差，但比之前的极小包稳定
         if (pcmCache.length >= targetSamplesPerChunk) {
           const pcmData = new Int16Array(pcmCache);
           asrSocket.send(pcmData.buffer);
-          pcmCache = []; // 清空缓存
+          pcmCache = [];
         }
       };
 
       source.connect(window.audioProcessor);
       
-      // 创建一个无声节点来保持 scriptProcessor 工作, 防止回声
       const dummyGain = audioContext.createGain();
       dummyGain.gain.value = 0;
       window.audioProcessor.connect(dummyGain);
@@ -336,7 +477,7 @@ createApp({
       try {
         videoStream = await navigator.mediaDevices.getDisplayMedia({ 
           video: true, 
-          audio: true // Request system audio
+          audio: true
         });
         
         await initAudioRecording(videoStream);
@@ -356,7 +497,6 @@ createApp({
         takeScreenshot();
 
         pushLog("开启实时分析 (基于上一轮完成自动触发)...");
-        // 第一次延迟 15 秒后触发，后续由 triggerCaseAnalysis 自己回调
         analysisInterval = setTimeout(() => {
           triggerCaseAnalysis(false);
         }, 15000);
@@ -398,8 +538,6 @@ createApp({
         asrSocket = null;
       }
       pushLog("停止截屏与录音");
-      // 根据要求，不再执行最终案例分析
-      // await triggerCaseAnalysis(true);
       isStoppingCapture = false;
     }
 
@@ -407,7 +545,6 @@ createApp({
       if (!currentSessionId) return;
       if (isAnalyzing) {
         if (isFinal) {
-          // 如果正在分析中，但用户点击了结束，则等待当前分析完成后再触发最后一次
           pushLog("等待当前分析完成以执行最终分析...");
           const checkInterval = setInterval(() => {
             if (!isAnalyzing) {
@@ -421,15 +558,12 @@ createApp({
       isAnalyzing = true;
       pushLog(isFinal ? "开始最终案例分析..." : "触发实时增量案例分析...");
       try {
-        // 在发给后端前，截取上下文长度。只给后端发最新的几行以及之前同等长度的上下文。
         const newLines = transcriptLines.value.slice(caseLastProcessedTranscriptLineCount.value);
         let newTranscriptText = newLines.join("\n");
         if (isFinal && transcriptDraft.value) {
             newTranscriptText += "\n[识别中] " + transcriptDraft.value;
         }
 
-        // 计算上下文长度（提取和新增内容同样行数的历史记录作为上下文参考）
-        // 限制最多发送过去 100 行上下文，防止 payload 过于巨大超出 token 限制
         const contextLineCount = Math.min(newLines.length, 100);
         const startIndex = Math.max(0, caseLastProcessedTranscriptLineCount.value - contextLineCount);
         const contextLines = transcriptLines.value.slice(startIndex, caseLastProcessedTranscriptLineCount.value);
@@ -450,26 +584,43 @@ createApp({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 
             sessionId: currentSessionId, 
-            transcriptText: newTranscriptText, // 新增转写
-            contextTranscriptText: contextTranscriptText, // 上下文转写
+            transcriptText: newTranscriptText,
+            contextTranscriptText: contextTranscriptText,
             previousAnalysis: prevAnalysisPayload,
             lastProcessedFile: caseLastProcessedFile.value,
             isFinal
           })
         });
+        const rawText = await r.text();
+        let res = null;
+        try {
+          res = rawText ? JSON.parse(rawText) : null;
+        } catch (parseErr) {
+          console.error("analyze-case parse error:", parseErr, rawText);
+          pushLog(`案例分析响应解析失败: ${parseErr?.message || "invalid_json"}`);
+          if (!r.ok) {
+            pushLog(`案例分析接口异常: http_${r.status}`);
+          }
+          return;
+        }
 
-        const res = await r.json();
+        if (!res) {
+          pushLog(`案例分析返回空响应${r.ok ? "" : `: http_${r.status}`}`);
+          return;
+        }
+
+        if (!r.ok) {
+          pushLog(`案例分析接口异常: ${res.message || res.error || `http_${r.status}`}`);
+          return;
+        }
+
         if (res.ok || res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
-          // 仅在请求成功或明确无新内容时更新指针，防止接口报错或被拒绝时漏掉文本
           caseLastProcessedTranscriptLineCount.value += newLines.length;
         }
 
         if (res.ok && res.data) {
           if (res.data.analysis) {
-            // 前端自行处理增量追加
             if (data.value) {
-              // 暂时屏蔽掉由大模型生成修正后的会议转写，直接使用前端收集到的实时转写内容接上
-              // 保证其他依赖此字段的功能正常运行
               data.value = {
                 ...data.value,
                 correctedTranscriptMd: transcriptLines.value.join("\n"),
@@ -489,6 +640,20 @@ createApp({
           if (res.data.lastProcessedFile) {
              caseLastProcessedFile.value = res.data.lastProcessedFile;
           }
+          if (Array.isArray(res.data.profiles)) {
+            applyProfiles(res.data.profiles);
+          } else {
+            loadProfileList();
+          }
+          if (res.data.profileSync) {
+            if (res.data.profileSync.updated) {
+              pushLog("同事画像已随本轮增量分析同步更新");
+            } else if (res.data.profileSync.skippedReason) {
+              pushLog(`同事画像本轮未更新：${res.data.profileSync.skippedReason}`);
+            } else if (res.data.profileSync.attempted) {
+              pushLog("同事画像本轮已尝试同步，但没有产生有效更新");
+            }
+          }
           pushLog(isFinal ? "最终案例分析完成" : "增量案例分析完成");
         } else if (res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
           pushLog("暂无新增截屏或内容");
@@ -496,13 +661,11 @@ createApp({
           pushLog(`案例分析失败: ${res.message || res.error || "unknown"}`);
         }
       } catch (e) {
-        pushLog("案例分析请求出错");
+        console.error("analyze-case request error:", e);
+        pushLog(`案例分析请求出错: ${e?.message || "network_error"}`);
       } finally {
-        // 哪怕之前出错了，isAnalyzing 也必须复位，且循环要继续
         isAnalyzing = false;
-        // 如果还没有停止捕捉，且不是最后一次分析，那么排队下一次分析
         if (isCapturing.value && !isFinal) {
-           // 为了避免大模型极速返回导致死循环发请求（可能没有新数据），加一个合理的缓冲间隔，例如 5 秒
            analysisInterval = setTimeout(() => {
              triggerCaseAnalysis(false);
            }, 5000);
@@ -537,7 +700,10 @@ createApp({
       }
     }
 
-    onMounted(loadHealth);
+    onMounted(() => {
+      loadHealth();
+      loadProfileList();
+    });
 
     return {
       file,
@@ -549,13 +715,29 @@ createApp({
       logEl,
       isCapturing,
       caseImages,
+      transcriptLines,
       formatBytes,
       renderMd,
       onPickFile,
       onUpload,
       onReset,
       toggleCapture,
-      getTranscriptDisplay
+      getTranscriptDisplay,
+      speakerNameMap,
+      profileList,
+      selectedProfileSlug,
+      profileDetail,
+      editingSpeaker,
+      editingName,
+      showProfilePanel,
+      getDisplayName,
+      startEditSpeaker,
+      saveSpeakerName,
+      cancelEditSpeaker,
+      getDetectedSpeakers,
+      guessSpeakerNames,
+      loadProfileDetail,
+      deleteProfileAction
     };
   },
   template: `
@@ -567,7 +749,10 @@ createApp({
             后端模型：{{ health?.model ?? "-" }} · thinking：{{ health?.enableThinking ?? "-" }}
           </div>
         </div>
-        <div class="subtle">上传会议转写文档（txt/md）→ 生成分板块技术报告</div>
+        <div style="display:flex;gap:12px;align-items:center;">
+          <div class="subtle">上传会议转写文档（txt/md）→ 生成分板块技术报告</div>
+          <a href="/chat.html" class="btn secondary">同事画像对话</a>
+        </div>
       </div>
 
       <div class="card">
@@ -583,12 +768,6 @@ createApp({
       </div>
 
       <div v-if="data" class="panels">
-        <!-- 暂时屏蔽修正后的转写
-        <div class="card">
-          <div class="panel-title">1. 修正后的会议转写</div>
-          <div class="md" v-html="renderMd(data.correctedTranscriptMd)"></div>
-        </div>
-        -->
         <div class="card">
           <div class="panel-title">2. 参与者与观点</div>
           <div class="md" v-html="renderMd(data.participantsAndViewpointsMd)"></div>
@@ -611,8 +790,75 @@ createApp({
       </div>
 
       <div class="card monitor">
-        <div class="panel-title">实时转写</div>
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>实时转写</span>
+          <div style="display:flex;gap:6px;">
+            <button class="btn-sm" @click="guessSpeakerNames" :disabled="!transcriptLines.length">智能识人</button>
+          </div>
+        </div>
+        <div v-if="getDetectedSpeakers().length > 0" class="speaker-bar">
+          <span class="speaker-bar-label">发言人：</span>
+          <div v-for="sp in getDetectedSpeakers()" :key="sp" class="speaker-chip" @click="startEditSpeaker(sp)">
+            <template v-if="editingSpeaker === sp">
+              <input 
+                class="speaker-input" 
+                v-model="editingName" 
+                @keyup.enter="saveSpeakerName" 
+                @keyup.escape="cancelEditSpeaker"
+                placeholder="输入姓名"
+                autofocus
+              />
+              <button class="chip-btn" @click="saveSpeakerName">✓</button>
+              <button class="chip-btn" @click="cancelEditSpeaker">✕</button>
+            </template>
+            <template v-else>
+              {{ getDisplayName(sp) }}
+              <span v-if="!speakerNameMap[sp]" class="rename-hint">点击命名</span>
+            </template>
+          </div>
+        </div>
         <div class="pre">{{ getTranscriptDisplay() }}</div>
+      </div>
+
+      <div class="card monitor">
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" @click="showProfilePanel = !showProfilePanel">
+          <span>同事画像 ({{ profileList.length }})</span>
+          <span style="font-size:12px;color:#94a3b8;">{{ showProfilePanel ? '收起 ▲' : '展开 ▼' }}</span>
+        </div>
+        <div v-if="showProfilePanel">
+          <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无同事画像，会议过程中将自动构建</div>
+          <div v-else class="profile-grid">
+            <div 
+              v-for="p in profileList" 
+              :key="p.slug" 
+              class="profile-card"
+              :class="{ active: selectedProfileSlug === p.slug }"
+              @click="loadProfileDetail(p.slug)"
+            >
+              <div class="profile-name">{{ p.name || p.speakerLabel }}</div>
+              <div class="profile-role">{{ p.role || '角色未知' }}</div>
+              <div class="profile-tags" v-if="p.tags">
+                <span v-for="tag in (p.tags.personality || []).slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
+              </div>
+              <div class="profile-impression" v-if="p.impression">{{ p.impression }}</div>
+              <div class="profile-meta">参会 {{ p.meeting_count || 0 }} 次</div>
+              <button class="btn-delete-sm" @click.stop="deleteProfileAction(p.slug)" title="删除画像">×</button>
+            </div>
+          </div>
+          <div v-if="profileDetail" class="profile-detail">
+            <div class="profile-detail-header">
+              <h3>{{ profileDetail.name || profileDetail.speakerLabel }} — 画像详情</h3>
+            </div>
+            <div class="profile-section">
+              <h4>Persona（性格与行为）</h4>
+              <div class="md" v-html="renderMd(profileDetail.personaMd)"></div>
+            </div>
+            <div class="profile-section">
+              <h4>Work（工作能力与方法）</h4>
+              <div class="md" v-html="renderMd(profileDetail.workMd)"></div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="card monitor">
@@ -620,7 +866,6 @@ createApp({
         <div class="pre" ref="logEl">{{ logs.length ? logs.join("\\n") : (loading ? "准备中..." : "暂无") }}</div>
       </div>
 
-      <!-- Floating Ball for screen capture -->
       <div 
         class="floating-ball" 
         :class="{ capturing: isCapturing }"
@@ -632,4 +877,22 @@ createApp({
       </div>
     </div>
   `
-}).mount("#app");
+});
+
+(function() {
+  const appEl = document.getElementById("app");
+  if (!appEl) return;
+  const snapshotHtml = appEl.innerHTML;
+  const hasRealContent = snapshotHtml.length > 500;
+  const isLikelyOffline = !window.navigator.onLine || (hasRealContent && snapshotHtml.includes("panel-title"));
+
+  if (isLikelyOffline && hasRealContent) {
+    const offlineBanner = document.createElement("div");
+    offlineBanner.style.cssText = "background:#fbbf24;color:#1e293b;padding:8px 16px;text-align:center;font-size:14px;font-weight:600;";
+    offlineBanner.textContent = "📋 离线快照模式 — 内容为保存时的状态，无法实时更新";
+    appEl.insertBefore(offlineBanner, appEl.firstChild);
+  } else {
+    appEl.innerHTML = "";
+    vm.mount(appEl);
+  }
+})();
