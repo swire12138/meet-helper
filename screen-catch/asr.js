@@ -11,6 +11,26 @@ export function setupAsrSocket(server) {
   const __dirname = path.dirname(__filename);
   const bridgeScript = path.join(__dirname, "asr_bridge.py");
 
+  const createWavHeader = (dataSize, sampleRate = 16000, channels = 1, bitsPerSample = 16) => {
+    const header = Buffer.alloc(44);
+    const byteRate = sampleRate * channels * bitsPerSample / 8;
+    const blockAlign = channels * bitsPerSample / 8;
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(dataSize, 40);
+    return header;
+  };
+
   wss.on("connection", (ws, req) => {
     console.log("Client connected to ASR WebSocket");
 
@@ -45,13 +65,17 @@ export function setupAsrSocket(server) {
       fs.mkdirSync(baseDir, { recursive: true });
     }
     const transcriptFile = path.join(baseDir, "transcript.txt");
+    const rawAudioFile = path.join(baseDir, "full-audio.pcm");
+    const wavAudioFile = path.join(baseDir, "full-audio.wav");
     fs.writeFileSync(transcriptFile, "", "utf8");
+    const audioWriteStream = fs.createWriteStream(rawAudioFile, { flags: "w" });
     console.log("ASR transcript target:", transcriptFile);
 
     let asrProcess = null;
     let sentenceWritten = false;
     let latestPartialText = "";
     let fallbackFlushed = false;
+    let audioFinalized = false;
     const speakerMap = new Map();
     let nextSpeakerNumber = 1;
 
@@ -75,6 +99,33 @@ export function setupAsrSocket(server) {
         .trim();
       if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(cleaned)) return "";
       return cleaned.length > 2000 ? cleaned.slice(0, 2000) : cleaned;
+    };
+
+    const finalizeAudioFile = () => {
+      if (audioFinalized) return;
+      audioFinalized = true;
+      if (!fs.existsSync(rawAudioFile)) return;
+      let dataSize = 0;
+      try {
+        dataSize = fs.statSync(rawAudioFile).size;
+      } catch (err) {
+        console.error("Error stating raw audio file:", err);
+        return;
+      }
+      const wavStream = fs.createWriteStream(wavAudioFile, { flags: "w" });
+      wavStream.on("error", (err) => {
+        console.error("Error writing wav audio file:", err);
+      });
+      wavStream.write(createWavHeader(dataSize));
+      const rawReadStream = fs.createReadStream(rawAudioFile);
+      rawReadStream.on("error", (err) => {
+        console.error("Error reading raw audio file:", err);
+        wavStream.destroy(err);
+      });
+      wavStream.on("finish", () => {
+        console.log("ASR wav finalized:", wavAudioFile, "pcmBytes=", dataSize);
+      });
+      rawReadStream.pipe(wavStream);
     };
 
     const flushFallbackText = () => {
@@ -114,6 +165,10 @@ export function setupAsrSocket(server) {
         } else {
           console.error("ASR process stdin error:", err);
         }
+      });
+
+      audioWriteStream.on("error", (err) => {
+        console.error("ASR raw audio stream error:", err);
       });
 
       const outputReader = readline.createInterface({ input: asrProcess.stdout });
@@ -210,6 +265,7 @@ export function setupAsrSocket(server) {
             return;
           }
           const audioBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
+          audioWriteStream.write(audioBuffer);
           audioPacketCount += 1;
           if (audioPacketCount <= 5) {
             let sum = 0;
@@ -231,6 +287,13 @@ export function setupAsrSocket(server) {
       console.log("Client disconnected from ASR WebSocket");
       if (asrProcess && asrProcess.stdin && !asrProcess.stdin.destroyed) {
         asrProcess.stdin.end();
+      }
+      if (!audioWriteStream.destroyed) {
+        audioWriteStream.end(() => {
+          finalizeAudioFile();
+        });
+      } else {
+        finalizeAudioFile();
       }
       flushFallbackText();
       if (asrProcess && !asrProcess.killed) {

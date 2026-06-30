@@ -21,6 +21,16 @@ const vm = createApp({
     const editingSpeaker = ref(null);
     const editingName = ref("");
     const showProfilePanel = ref(false);
+    const editingProfileName = ref(false);
+    const editingProfileNameValue = ref("");
+    const showCaptureProfileModal = ref(false);
+    const captureProfileMode = ref("select");
+    const captureProfilePurpose = ref("capture");
+    const captureProfileSlug = ref("");
+    const captureProfileError = ref("");
+    const newProfileName = ref("");
+    const newProfileRole = ref("");
+    const currentCaptureProfileSlug = ref(null);
 
     function formatBytes(bytes) {
       if (bytes < 1024) return `${bytes} B`;
@@ -109,11 +119,19 @@ const vm = createApp({
         if (res.ok) {
           profileDetail.value = res.data;
           selectedProfileSlug.value = slug;
+          editingProfileName.value = false;
+          editingProfileNameValue.value = res.data?.name || "";
         }
       } catch {}
     }
 
     async function deleteProfileAction(slug) {
+      const profile = profileList.value.find((item) => item.slug === slug);
+      const profileName = profile?.name || profile?.speakerLabel || slug;
+      const firstConfirm = window.confirm(`确定要删除画像「${profileName}」吗？`);
+      if (!firstConfirm) return;
+      const secondConfirm = window.confirm(`删除后将无法恢复。\n请再次确认删除画像「${profileName}」。`);
+      if (!secondConfirm) return;
       try {
         const r = await fetch(`/api/profiles/${slug}`, { method: "DELETE" });
         const res = await r.json();
@@ -123,6 +141,9 @@ const vm = createApp({
             profileDetail.value = null;
             selectedProfileSlug.value = null;
           }
+          if (currentCaptureProfileSlug.value === slug) {
+            currentCaptureProfileSlug.value = null;
+          }
           pushLog("已删除同事画像");
         }
       } catch {}
@@ -130,6 +151,47 @@ const vm = createApp({
 
     function getDisplayName(speakerLabel) {
       return speakerNameMap.value[speakerLabel] || speakerLabel;
+    }
+
+    function startEditProfileName() {
+      if (!profileDetail.value) return;
+      editingProfileName.value = true;
+      editingProfileNameValue.value = profileDetail.value.name || "";
+    }
+
+    function cancelEditProfileName() {
+      editingProfileName.value = false;
+      editingProfileNameValue.value = profileDetail.value?.name || "";
+    }
+
+    async function saveProfileName() {
+      if (!profileDetail.value?.slug || !editingProfileNameValue.value.trim()) return;
+      try {
+        const r = await fetch("/api/profiles/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slug: profileDetail.value.slug,
+            name: editingProfileNameValue.value.trim()
+          })
+        });
+        const res = await r.json();
+        if (!r.ok || !res.ok) {
+          pushLog(`画像改名失败: ${res?.error || `http_${r.status}`}`);
+          return;
+        }
+        pushLog(`已将画像改名为「${editingProfileNameValue.value.trim()}」`);
+        await loadProfileList();
+        await loadProfileDetail(profileDetail.value.slug);
+      } catch (e) {
+        pushLog(`画像改名请求出错: ${e?.message || "network_error"}`);
+      } finally {
+        editingProfileName.value = false;
+      }
+    }
+
+    function getProfileNameBySlug(slug) {
+      return profileList.value.find((item) => item.slug === slug)?.name || "";
     }
 
     function startEditSpeaker(speakerLabel) {
@@ -176,6 +238,86 @@ const vm = createApp({
         const numB = parseInt(b.replace("发言人", ""), 10);
         return numA - numB;
       });
+    }
+
+    async function openCaptureProfileModal(mode = "select", purpose = "capture") {
+      await loadProfileList();
+      captureProfileMode.value = mode;
+      captureProfilePurpose.value = purpose;
+      captureProfileError.value = "";
+      captureProfileSlug.value = selectedProfileSlug.value || profileList.value[0]?.slug || "";
+      newProfileName.value = "";
+      newProfileRole.value = "";
+      showCaptureProfileModal.value = true;
+    }
+
+    function closeCaptureProfileModal() {
+      showCaptureProfileModal.value = false;
+      captureProfileError.value = "";
+    }
+
+    async function confirmCaptureProfile() {
+      captureProfileError.value = "";
+      let targetSlug = captureProfileSlug.value;
+
+      if (captureProfileMode.value === "create") {
+        if (!newProfileName.value.trim()) {
+          captureProfileError.value = "请先输入画像名称";
+          return;
+        }
+        try {
+          const r = await fetch("/api/profiles/manual", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: newProfileName.value.trim(),
+              role: newProfileRole.value.trim()
+            })
+          });
+          const res = await r.json();
+          if (!r.ok || !res.ok || !res.data?.slug) {
+            captureProfileError.value = res?.error || `http_${r.status}`;
+            return;
+          }
+          targetSlug = res.data.slug;
+          pushLog(`已新建画像：${res.data.name}`);
+          await loadProfileList();
+        } catch (e) {
+          captureProfileError.value = e?.message || "network_error";
+          return;
+        }
+      }
+
+      if (!targetSlug) {
+        captureProfileError.value = "请选择本次要更新的画像";
+        return;
+      }
+
+      currentCaptureProfileSlug.value = targetSlug;
+      selectedProfileSlug.value = targetSlug;
+      await loadProfileDetail(targetSlug);
+      closeCaptureProfileModal();
+
+      if (captureProfilePurpose.value !== "capture") {
+        return;
+      }
+
+      transcriptLines.value = [];
+      transcriptDraft.value = "";
+      caseImages.value = [];
+      caseLastProcessedFile.value = null;
+      caseLastProcessedTranscriptLineCount.value = 0;
+      data.value = null;
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const HH = String(d.getHours()).padStart(2, '0');
+      const MM = String(d.getMinutes()).padStart(2, '0');
+      const SS = String(d.getSeconds()).padStart(2, '0');
+      currentSessionId = `meeting-${yyyy}${mm}${dd}-${HH}${MM}${SS}`;
+      pushLog(`本次录屏将更新画像：${getProfileNameBySlug(targetSlug) || targetSlug}`);
+      await startCapture();
     }
 
     async function guessSpeakerNames() {
@@ -342,21 +484,7 @@ const vm = createApp({
       if (isCapturing.value) {
         await stopCapture();
       } else {
-        transcriptLines.value = [];
-        transcriptDraft.value = "";
-        caseImages.value = [];
-        caseLastProcessedFile.value = null;
-        caseLastProcessedTranscriptLineCount.value = 0;
-        data.value = null;
-        const d = new Date();
-        const yyyy = d.getFullYear();
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        const HH = String(d.getHours()).padStart(2, '0');
-        const MM = String(d.getMinutes()).padStart(2, '0');
-        const SS = String(d.getSeconds()).padStart(2, '0');
-        currentSessionId = `meeting-${yyyy}${mm}${dd}-${HH}${MM}${SS}`;
-        await startCapture();
+        await openCaptureProfileModal(profileList.value.length > 0 ? "select" : "create");
       }
     }
 
@@ -439,10 +567,9 @@ const vm = createApp({
         } else if (msg.type === "partial") {
           updateTranscriptDraft(msg.text || "");
         } else if (msg.type === "sentence") {
-          const speaker = msg.speakerId || "未知发言人";
           const now = new Date();
           const ts = String(now.getHours()).padStart(2, '0') + ":" + String(now.getMinutes()).padStart(2, '0') + ":" + String(now.getSeconds()).padStart(2, '0');
-          appendTranscriptLine(`[${ts}] [${speaker}] ${msg.text}`);
+          appendTranscriptLine(`[${ts}] ${msg.text}`);
         } else if (msg.type === "error") {
           pushLog(`ASR错误: ${msg.message}`);
         }
@@ -509,6 +636,7 @@ const vm = createApp({
     async function stopCapture() {
       if (isStoppingCapture) return;
       isStoppingCapture = true;
+      const sessionIdToFinalize = currentSessionId;
       isCapturing.value = false;
       if (captureInterval) clearInterval(captureInterval);
       if (analysisInterval) clearTimeout(analysisInterval);
@@ -538,7 +666,49 @@ const vm = createApp({
         asrSocket = null;
       }
       pushLog("停止截屏与录音");
+      await finalizeAsrTranscript(sessionIdToFinalize);
       isStoppingCapture = false;
+    }
+
+    async function finalizeAsrTranscript(sessionId) {
+      if (!sessionId) return;
+      pushLog("开始离线转写回填...");
+      try {
+        const r = await fetch("/api/asr/finalize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId })
+        });
+        const rawText = await r.text();
+        let res = null;
+        try {
+          res = rawText ? JSON.parse(rawText) : null;
+        } catch (parseErr) {
+          console.error("asr finalize parse error:", parseErr, rawText);
+          pushLog(`离线回填响应解析失败: ${parseErr?.message || "invalid_json"}`);
+          return;
+        }
+        if (!r.ok || !res?.ok) {
+          pushLog(`离线回填失败: ${res?.message || res?.error || `http_${r.status}`}`);
+          return;
+        }
+        const finalizedLines = Array.isArray(res?.data?.lines) ? res.data.lines : [];
+        if (finalizedLines.length > 0) {
+          transcriptLines.value = finalizedLines.map((line) => line.replace(/^\[([^\]]+)\]\s*\[[^\]]+\]\s*/, "[$1] "));
+          transcriptDraft.value = "";
+          caseLastProcessedTranscriptLineCount.value = transcriptLines.value.length;
+          if (data.value) {
+            data.value = {
+              ...data.value,
+              correctedTranscriptMd: transcriptLines.value.join("\n")
+            };
+          }
+        }
+        pushLog(`离线回填完成，模型：${res?.data?.model || "unknown"}`);
+      } catch (e) {
+        console.error("asr finalize request error:", e);
+        pushLog(`离线回填请求出错: ${e?.message || "network_error"}`);
+      }
     }
 
     async function triggerCaseAnalysis(isFinal = false) {
@@ -588,7 +758,8 @@ const vm = createApp({
             contextTranscriptText: contextTranscriptText,
             previousAnalysis: prevAnalysisPayload,
             lastProcessedFile: caseLastProcessedFile.value,
-            isFinal
+            isFinal,
+            targetProfileSlug: currentCaptureProfileSlug.value
           })
         });
         const rawText = await r.text();
@@ -716,6 +887,14 @@ const vm = createApp({
       isCapturing,
       caseImages,
       transcriptLines,
+      showCaptureProfileModal,
+      captureProfileMode,
+      captureProfilePurpose,
+      captureProfileSlug,
+      captureProfileError,
+      newProfileName,
+      newProfileRole,
+      currentCaptureProfileSlug,
       formatBytes,
       renderMd,
       onPickFile,
@@ -727,6 +906,8 @@ const vm = createApp({
       profileList,
       selectedProfileSlug,
       profileDetail,
+      editingProfileName,
+      editingProfileNameValue,
       editingSpeaker,
       editingName,
       showProfilePanel,
@@ -737,7 +918,14 @@ const vm = createApp({
       getDetectedSpeakers,
       guessSpeakerNames,
       loadProfileDetail,
-      deleteProfileAction
+      deleteProfileAction,
+      startEditProfileName,
+      cancelEditProfileName,
+      saveProfileName,
+      openCaptureProfileModal,
+      closeCaptureProfileModal,
+      confirmCaptureProfile,
+      getProfileNameBySlug
     };
   },
   template: `
@@ -792,30 +980,7 @@ const vm = createApp({
       <div class="card monitor">
         <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
           <span>实时转写</span>
-          <div style="display:flex;gap:6px;">
-            <button class="btn-sm" @click="guessSpeakerNames" :disabled="!transcriptLines.length">智能识人</button>
-          </div>
-        </div>
-        <div v-if="getDetectedSpeakers().length > 0" class="speaker-bar">
-          <span class="speaker-bar-label">发言人：</span>
-          <div v-for="sp in getDetectedSpeakers()" :key="sp" class="speaker-chip" @click="startEditSpeaker(sp)">
-            <template v-if="editingSpeaker === sp">
-              <input 
-                class="speaker-input" 
-                v-model="editingName" 
-                @keyup.enter="saveSpeakerName" 
-                @keyup.escape="cancelEditSpeaker"
-                placeholder="输入姓名"
-                autofocus
-              />
-              <button class="chip-btn" @click="saveSpeakerName">✓</button>
-              <button class="chip-btn" @click="cancelEditSpeaker">✕</button>
-            </template>
-            <template v-else>
-              {{ getDisplayName(sp) }}
-              <span v-if="!speakerNameMap[sp]" class="rename-hint">点击命名</span>
-            </template>
-          </div>
+          <div class="subtle">当前更新画像：{{ currentCaptureProfileSlug ? getProfileNameBySlug(currentCaptureProfileSlug) : '未选择' }}</div>
         </div>
         <div class="pre">{{ getTranscriptDisplay() }}</div>
       </div>
@@ -826,7 +991,10 @@ const vm = createApp({
           <span style="font-size:12px;color:#94a3b8;">{{ showProfilePanel ? '收起 ▲' : '展开 ▼' }}</span>
         </div>
         <div v-if="showProfilePanel">
-          <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无同事画像，会议过程中将自动构建</div>
+          <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+            <button class="btn secondary" @click.stop="openCaptureProfileModal('create', 'manage')">手动新增画像</button>
+          </div>
+          <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无同事画像，请先手动新增，或在开始录屏时新建并选择。</div>
           <div v-else class="profile-grid">
             <div 
               v-for="p in profileList" 
@@ -847,7 +1015,23 @@ const vm = createApp({
           </div>
           <div v-if="profileDetail" class="profile-detail">
             <div class="profile-detail-header">
-              <h3>{{ profileDetail.name || profileDetail.speakerLabel }} — 画像详情</h3>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+                <h3 style="margin:0;">{{ profileDetail.name || profileDetail.speakerLabel }} — 画像详情</h3>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <template v-if="editingProfileName">
+                    <input
+                      v-model="editingProfileNameValue"
+                      @keyup.enter="saveProfileName"
+                      @keyup.escape="cancelEditProfileName"
+                      placeholder="输入画像名称"
+                      style="padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;min-width:220px;"
+                    />
+                    <button class="btn secondary" @click="cancelEditProfileName">取消</button>
+                    <button class="btn" @click="saveProfileName">保存名称</button>
+                  </template>
+                  <button v-else class="btn secondary" @click="startEditProfileName">修改名称</button>
+                </div>
+              </div>
             </div>
             <div class="profile-section">
               <h4>Persona（性格与行为）</h4>
@@ -874,6 +1058,50 @@ const vm = createApp({
       >
         <span v-if="!isCapturing">录屏</span>
         <span v-else>停止</span>
+      </div>
+
+      <div v-if="showCaptureProfileModal" style="position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px;">
+        <div class="card" style="width:min(520px,100%);margin:0;">
+          <div class="panel-title">{{ captureProfileMode === 'create' ? '新建画像' : '选择本次要更新的画像' }}</div>
+          <div class="hint" style="margin-top:0;">
+            {{ captureProfilePurpose === 'manage'
+              ? '手动创建一个画像，后续录屏可以直接复用。'
+              : captureProfileMode === 'create'
+              ? '手动创建一个画像，后续录屏可以直接复用。'
+              : '本次录屏的增量分析和画像更新只会写入你手动选择的这一个画像。' }}
+          </div>
+
+          <div v-if="captureProfileMode === 'select'" style="margin-top:16px;">
+            <div v-if="profileList.length === 0" class="hint">当前没有可选画像，请先新建。</div>
+            <select v-else v-model="captureProfileSlug" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;background:#fff;">
+              <option value="" disabled>请选择画像</option>
+              <option v-for="p in profileList" :key="p.slug" :value="p.slug">
+                {{ p.name }}{{ p.role ? ' · ' + p.role : '' }}
+              </option>
+            </select>
+            <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+              <button class="btn secondary" @click="captureProfileMode = 'create'">新建画像</button>
+            </div>
+          </div>
+
+          <div v-else style="display:flex;flex-direction:column;gap:10px;margin-top:16px;">
+            <input v-model="newProfileName" placeholder="画像名称，例如：张三 / 李工" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;" />
+            <input v-model="newProfileRole" placeholder="角色，可选，例如：架构师 / 产品经理" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;" />
+            <div style="display:flex;justify-content:flex-end;">
+              <button v-if="profileList.length > 0" class="btn secondary" @click="captureProfileMode = 'select'">返回选择已有画像</button>
+            </div>
+          </div>
+
+          <div v-if="captureProfileError" class="error">{{ captureProfileError }}</div>
+
+          <div class="row" style="justify-content:flex-end;margin-top:16px;">
+            <button class="btn secondary" @click="closeCaptureProfileModal">取消</button>
+            <button v-if="captureProfileMode === 'select'" class="btn" @click="confirmCaptureProfile">{{ captureProfilePurpose === 'manage' ? '确认选中' : '确认并开始录屏' }}</button>
+            <button v-else class="btn" @click="confirmCaptureProfile">
+              {{ captureProfilePurpose === 'manage' ? '创建画像' : (profileList.length > 0 ? '创建并选中' : '创建并开始录屏') }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   `

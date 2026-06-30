@@ -44,6 +44,16 @@ function ensureProfilesDir() {
   }
 }
 
+function createUniqueProfileSlug(name) {
+  const baseSlug = slugify(name);
+  let slug = baseSlug;
+  let index = 1;
+  while (fs.existsSync(getProfileDir(slug))) {
+    slug = `${baseSlug}-${index++}`;
+  }
+  return slug;
+}
+
 function extractSpeakerLines(transcriptText, speakerLabel) {
   const lines = transcriptText.split("\n");
   return lines
@@ -278,13 +288,27 @@ export async function mergeProfileForSpeaker(speakerLabel, transcriptText, scree
 }
 
 export async function upsertWorkProfileFromAnalysis(
-  speakerLabel,
+  speakerLabelOrOptions,
   analysis,
   transcriptText = "",
   screenshotCount = 0
 ) {
-  const existingProfile = loadProfileBySpeaker(speakerLabel);
-  const speakerLines = extractSpeakerLines(transcriptText, speakerLabel);
+  const options = speakerLabelOrOptions && typeof speakerLabelOrOptions === "object"
+    ? speakerLabelOrOptions
+    : null;
+  const isManualTarget = Boolean(options?.profileSlug);
+  const existingProfile = isManualTarget
+    ? loadProfileBySlug(options.profileSlug)
+    : loadProfileBySpeaker(speakerLabelOrOptions);
+  const speakerLabel = options?.speakerLabel || existingProfile?.name || existingProfile?.speakerLabel || speakerLabelOrOptions;
+  const speakerLines = isManualTarget
+    ? transcriptText
+    : extractSpeakerLines(transcriptText, speakerLabel);
+
+  if (isManualTarget && !existingProfile) {
+    return { ok: false, error: "profile_not_found" };
+  }
+
   const personaMessages = buildPersonaProfileFromAnalysisMessages({
     speakerLabel,
     existingProfile,
@@ -614,6 +638,78 @@ export function listProfiles() {
   } catch {}
 
   return profiles;
+}
+
+export function createManualProfile(name, role = "") {
+  const normalizedName = String(name || "").trim();
+  const normalizedRole = String(role || "").trim();
+  if (!normalizedName) {
+    return { ok: false, error: "missing_name" };
+  }
+
+  ensureProfilesDir();
+  const slug = createUniqueProfileSlug(normalizedName);
+  const profileDir = getProfileDir(slug);
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const now = new Date().toISOString();
+  const meta = {
+    name: normalizedName,
+    slug,
+    speakerLabel: "",
+    created_at: now,
+    updated_at: now,
+    version: "v1",
+    profile: { role: normalizedRole },
+    tags: { personality: [], culture: [] },
+    impression: "",
+    meeting_count: 0,
+    corrections_count: 0
+  };
+
+  fs.writeFileSync(path.join(profileDir, "meta.json"), JSON.stringify(meta, null, 2), "utf8");
+  fs.writeFileSync(path.join(profileDir, "persona.txt"), "", "utf8");
+  fs.writeFileSync(path.join(profileDir, "work.txt"), "", "utf8");
+
+  return {
+    ok: true,
+    data: {
+      slug,
+      name: normalizedName,
+      speakerLabel: "",
+      role: normalizedRole,
+      tags: meta.tags,
+      impression: "",
+      meeting_count: 0,
+      updated_at: now
+    }
+  };
+}
+
+export function updateProfileNameBySlug(slug, name) {
+  const normalizedSlug = String(slug || "").trim();
+  const normalizedName = String(name || "").trim();
+  if (!normalizedSlug || !normalizedName) {
+    return { ok: false, error: "missing_slug_or_name" };
+  }
+
+  const profile = loadProfileBySlug(normalizedSlug);
+  if (!profile) {
+    return { ok: false, error: "not_found" };
+  }
+
+  const profileDir = getProfileDir(normalizedSlug);
+  profile.name = normalizedName;
+  profile.updated_at = new Date().toISOString();
+  fs.writeFileSync(path.join(profileDir, "meta.json"), JSON.stringify(profile, null, 2), "utf8");
+
+  return {
+    ok: true,
+    data: {
+      slug: normalizedSlug,
+      name: normalizedName
+    }
+  };
 }
 
 export function updateSpeakerName(speakerLabel, realName) {

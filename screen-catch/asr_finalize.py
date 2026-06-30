@@ -2,9 +2,12 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import dashscope
-from dashscope.audio.asr import Recognition
+from dashscope.audio.asr import Transcription
 
 
 def load_api_key():
@@ -48,15 +51,111 @@ def extract_speaker_id(sentence):
     return None
 
 
+def is_http_url(value):
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
+def get_data_dir():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
+
+
+def build_public_audio_url(local_path):
+    public_base = (os.getenv("ASR_AUDIO_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not public_base:
+        return None
+    data_dir = get_data_dir()
+    abs_path = os.path.abspath(local_path)
+    try:
+        rel_path = os.path.relpath(abs_path, data_dir)
+    except ValueError:
+        return None
+    if rel_path.startswith(".."):
+        return None
+    rel_url = urllib.parse.quote(rel_path.replace("\\", "/"))
+    return f"{public_base}/api/asr/files/{rel_url}"
+
+
+def normalize_audio_source(audio_source):
+    if is_http_url(audio_source):
+        return audio_source
+    if not os.path.exists(audio_source):
+        return None
+    return build_public_audio_url(audio_source)
+
+
+def fetch_json(url):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8"))
+
+
+def extract_transcription_url(payload):
+    if not isinstance(payload, dict):
+        return None
+    output = payload.get("output") or {}
+    result = output.get("result")
+    if isinstance(result, dict) and result.get("transcription_url"):
+        return result.get("transcription_url")
+    results = output.get("results")
+    if isinstance(results, list):
+        for item in results:
+            if isinstance(item, dict) and item.get("transcription_url"):
+                return item.get("transcription_url")
+    return None
+
+
+def extract_sentences_from_payload(payload):
+    if not isinstance(payload, dict):
+        return []
+    transcripts = payload.get("transcripts")
+    if not isinstance(transcripts, list):
+        return []
+    sentences = []
+    for transcript in transcripts:
+        if not isinstance(transcript, dict):
+            continue
+        for s in transcript.get("sentences", []) or []:
+            if not isinstance(s, dict):
+                continue
+            text = s.get("text", "")
+            if not text:
+                continue
+            sentences.append(
+                {
+                    "text": text,
+                    "speakerId": extract_speaker_id(s),
+                    "beginTime": s.get("begin_time", 0),
+                    "endTime": s.get("end_time", 0),
+                }
+            )
+    return sentences
+
+
+def response_to_dict(response):
+    if isinstance(response, dict):
+        return {k: response_to_dict(v) for k, v in response.items()}
+    if isinstance(response, list):
+        return [response_to_dict(v) for v in response]
+    if isinstance(response, (str, int, float, bool)) or response is None:
+        return response
+    if hasattr(response, "__dict__"):
+        return {
+            k: response_to_dict(v)
+            for k, v in response.__dict__.items()
+            if not k.startswith("_")
+        }
+    return str(response)
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "missing_wav_path"}, ensure_ascii=True))
         return 1
-    wav_path = sys.argv[1]
-    if not os.path.exists(wav_path):
-        print(json.dumps({"ok": False, "error": "wav_not_found"}, ensure_ascii=True))
+    audio_source = sys.argv[1]
+    if not is_http_url(audio_source) and not os.path.exists(audio_source):
+        print(json.dumps({"ok": False, "error": "audio_source_not_found"}, ensure_ascii=True))
         return 1
 
     api_key = load_api_key()
@@ -65,45 +164,110 @@ def main():
         return 1
     dashscope.api_key = api_key
 
-    rec = Recognition(
-        model="paraformer-realtime-v2",
-        format="wav",
-        sample_rate=16000,
-        diarization_enabled=True,
-        language_hints=["zh", "en"],
-        callback=None
-    )
-    result = rec.call(wav_path)
-    try:
-        status_code = int(getattr(result, "status_code", 0))
-    except Exception:
-        status_code = 0
-    if status_code != 200:
-        message = getattr(result, "message", "finalize_asr_failed")
-        print(json.dumps({"ok": False, "error": str(message)}, ensure_ascii=True))
+    model = os.getenv("ASR_FINALIZE_MODEL", "paraformer-v2")
+    public_audio_url = normalize_audio_source(audio_source)
+    if not public_audio_url:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "missing_public_audio_url",
+                    "message": "Paraformer file transcription requires a public audio URL. Set ASR_AUDIO_PUBLIC_BASE_URL or pass an https URL.",
+                    "model": model,
+                },
+                ensure_ascii=True,
+            )
+        )
         return 1
 
-    raw_sentences = result.get_sentence()
-    if isinstance(raw_sentences, dict):
-        raw_sentences = [raw_sentences]
-    if not isinstance(raw_sentences, list):
-        raw_sentences = []
-
-    sentences = []
-    for s in raw_sentences:
-        text = s.get("text", "") if isinstance(s, dict) else ""
-        if not text:
-            continue
-        sentences.append(
-            {
-                "text": text,
-                "speakerId": extract_speaker_id(s),
-                "beginTime": s.get("begin_time", 0) if isinstance(s, dict) else 0,
-                "endTime": s.get("end_time", 0) if isinstance(s, dict) else 0
-            }
+    try:
+        task = Transcription.async_call(
+            model=model,
+            file_urls=[public_audio_url],
+            diarization_enabled=True,
+            timestamp_alignment_enabled=True,
+            language_hints=["zh", "en"],
         )
-    print(json.dumps({"ok": True, "sentences": sentences}, ensure_ascii=True))
-    return 0
+        result = Transcription.wait(task)
+        payload = response_to_dict(result)
+        try:
+            status_code = int(payload.get("status_code", 0))
+        except Exception:
+            status_code = 0
+        if status_code != 200:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": str(payload.get("message") or payload.get("code") or "finalize_asr_failed"),
+                        "model": model,
+                        "audioUrl": public_audio_url,
+                        "payload": payload,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+
+        transcription_url = extract_transcription_url(payload)
+        if not transcription_url:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "missing_transcription_url",
+                        "model": model,
+                        "audioUrl": public_audio_url,
+                        "payload": payload,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+
+        result_payload = fetch_json(transcription_url)
+        sentences = extract_sentences_from_payload(result_payload)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "model": model,
+                    "audioUrl": public_audio_url,
+                    "transcriptionUrl": transcription_url,
+                    "sentences": sentences,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0
+    except urllib.error.URLError as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "fetch_transcription_result_failed",
+                    "message": str(exc),
+                    "model": model,
+                    "audioUrl": public_audio_url,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 1
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "finalize_asr_failed",
+                    "message": str(exc),
+                    "model": model,
+                    "audioUrl": public_audio_url,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 1
 
 
 if __name__ == "__main__":
