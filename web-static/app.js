@@ -940,6 +940,7 @@ const vm = createApp({
         <div style="display:flex;gap:12px;align-items:center;">
           <div class="subtle">上传会议转写文档（txt/md）→ 生成分板块技术报告</div>
           <a href="/chat.html" class="btn secondary">同事画像对话</a>
+          <a href="/chat-admin.html" class="btn secondary">编号后台</a>
         </div>
       </div>
 

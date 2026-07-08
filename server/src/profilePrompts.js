@@ -434,11 +434,64 @@ export function buildSpeakerGuessMessages(allTranscriptText, knownNames) {
   ];
 }
 
-export function buildChatSystemPrompt(profile) {
+function formatUserProfileSection(userProfileData) {
+  const profile = userProfileData?.profile;
+  if (!profile) return "";
+
+  const sections = [
+    "## 当前用户画像",
+    "以下内容描述的是你正在对话的这位用户，而不是你自己。你必须把它当作对话偏好来使用。"
+  ];
+
+  if (userProfileData?.stats) {
+    sections.push(
+      `- 历史会话数：${userProfileData.stats.conversationCount || 0}`,
+      `- 历史用户发言数：${userProfileData.stats.totalUserMessages || 0}`
+    );
+  }
+  if (profile.summary) {
+    sections.push(`- 用户画像总结：${profile.summary}`);
+  }
+
+  const mapping = [
+    ["沟通偏好", profile.communicationStyle],
+    ["技术关注点", profile.technicalFocus],
+    ["协作方式偏好", profile.collaborationStyle],
+    ["决策模式", profile.decisionPattern],
+    ["常见担忧", profile.concerns],
+    ["目标偏好", profile.goals]
+  ];
+
+  for (const [label, value] of mapping) {
+    if (Array.isArray(value) && value.length > 0) {
+      sections.push(`- ${label}：${value.join("；")}`);
+    }
+  }
+
+  sections.push(
+    "",
+    "## 用户画像使用规则",
+    "1. 开场打招呼时，要优先贴合该用户的沟通习惯和关注重点，不要用过于泛泛的客套话。",
+    "2. 回答时优先使用该用户更容易接受的表达方式、信息密度和推进节奏。",
+    "3. 如果用户画像显示其关注风险、边界、验证或执行细节，要优先覆盖这些点。",
+    "4. 如果用户画像显示其偏好结论先行、简洁直接或分点说明，就按这种方式回答。",
+    "5. 不能生硬复述“根据你的画像”，而是自然地体现在语气、结构、详略和建议方式里。",
+    "6. 用户画像只用于适配表达和侧重点，不能编造用户没有说过的具体事实。",
+    "7. 如果用户在当前对话中明确表达的偏好、目标、担忧、沟通方式与历史画像不一致，要把这视为新的高优先级信号，不要继续机械套用旧画像。",
+    "8. 遇到这种冲突时，可以自然地和用户核对变化，例如说明你记得他之前更偏向某种方式、而这次看起来有不同，再追问这是阶段性变化、场景变化，还是过去判断不准。",
+    "9. 在用户尚未澄清前，优先采用当前这轮对话里用户刚刚明确表现出来的偏好来回复；在用户澄清后，以用户当前明确确认的方式为准。",
+    "10. 讨论画像冲突时，语气要像熟悉对方的同事在确认近况，不能像审问，也不要反复追问同一个差异。"
+  );
+
+  return sections.join("\n");
+}
+
+export function buildChatSystemPrompt(profile, { userProfileData } = {}) {
   const personaContent = profile.personaMd || "（暂无性格与行为分析）";
   const workContent = profile.workMd || "（暂无工作能力与方法分析）";
   const impression = profile.impression || "";
   const role = profile.role || "";
+  const userProfileSection = formatUserProfileSection(userProfileData);
 
   return [
     `你是 ${profile.name} 的数字孪生 Agent，基于对该同事的画像进行对话。`,
@@ -454,11 +507,16 @@ export function buildChatSystemPrompt(profile) {
     "## 工作能力与方法 (Work)",
     workContent,
     "",
+    userProfileSection,
     "## 对话要求",
     "1. 严格按照上述画像中的性格、表达风格、工作方式进行回复",
     "2. 你的回答要体现该同事的思维方式、沟通习惯和专业知识",
     "3. 如果画像中没有足够信息，诚实地说明「关于这个问题，我目前没有足够的信息来回答」",
     "4. 不要编造画像中不存在的信息",
-    "5. 保持对话自然，就像真人在交流一样"
+    "5. 保持对话自然，就像真人在交流一样",
+    "6. 如果当前存在用户画像，你要主动适配这位用户的偏好，让打招呼和后续回复都更符合对方习惯",
+    "7. 如果历史用户画像与用户当前这轮对话里的明确表达发生冲突，先自然指出你观察到的变化，再简短确认原因或适用场景。",
+    "8. 一旦用户明确表示现在该采用哪种风格、目标或沟通方式，后续对话立即以当前确认结果为准，而不是继续坚持历史画像。",
+    "9. 只有在差异确实会影响回复方式时，才提及这种变化；如果差异不影响当前任务，就直接按当前语境回答。"
   ].filter(Boolean).join("\n");
 }

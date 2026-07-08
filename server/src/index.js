@@ -21,6 +21,17 @@ import {
   extractSpeakersFromTranscript,
   deleteProfile
 } from "./profileBuilder.js";
+import {
+  allocateChatUserId,
+  ensureChatUser,
+  getChatUser,
+  saveConversationState,
+  loadConversationState,
+  listChatUsers,
+  getChatUserDetail,
+  isValidChatUserId
+} from "./chatStore.js";
+import { getOrBuildUserProfile, loadStoredUserProfile } from "./userProfile.js";
 import { buildChatSystemPrompt } from "./profilePrompts.js";
 import { extractLikelyJsonObject, safeJsonParse } from "./json.js";
 
@@ -73,6 +84,18 @@ function normalizeChatMessages(messages = []) {
   return messages
     .filter((item) => item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string")
     .map((item) => ({ role: item.role, content: item.content }));
+}
+
+function normalizeConversationMessages(messages = []) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((item) => item && typeof item.content === "string")
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : "",
+      role: item.role === "user" || item.role === "spectator" ? item.role : "assistant",
+      content: item.content,
+      label: typeof item.label === "string" ? item.label : ""
+    }));
 }
 
 function formatChatHistory(messages = []) {
@@ -537,6 +560,101 @@ app.get("/api/profiles/:slug", (req, res) => {
   }
 });
 
+app.post("/api/chat-users/allocate", (req, res) => {
+  try {
+    const data = allocateChatUserId();
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error("Allocate chat user id error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/chat-users/login", (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!isValidChatUserId(userId)) {
+      return res.status(400).json({ ok: false, error: "invalid_user_id" });
+    }
+    const user = getChatUser(userId);
+    if (!user) {
+      return res.status(404).json({ ok: false, error: "user_not_found" });
+    }
+    const ensured = ensureChatUser(userId);
+    res.json(ensured);
+  } catch (e) {
+    console.error("Chat user login error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.get("/api/chat-users/:userId/conversations/:slug", (req, res) => {
+  try {
+    const result = loadConversationState(req.params.userId, req.params.slug);
+    if (!result.ok) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Load conversation state error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/chat-users/:userId/conversations/:slug", (req, res) => {
+  try {
+    const { profileName = "", messages = [], autopilotReport = "" } = req.body || {};
+    const result = saveConversationState(req.params.userId, req.params.slug, {
+      profileName,
+      messages: normalizeConversationMessages(messages),
+      autopilotReport
+    });
+    if (!result.ok) {
+      return res.status(result.error === "invalid_user_id" ? 400 : 404).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Save conversation state error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.get("/api/chat-admin/users", (req, res) => {
+  try {
+    res.json({ ok: true, data: listChatUsers() });
+  } catch (e) {
+    console.error("List chat admin users error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.get("/api/chat-admin/users/:userId", (req, res) => {
+  try {
+    const data = getChatUserDetail(req.params.userId);
+    if (!data) {
+      return res.status(404).json({ ok: false, error: "user_not_found" });
+    }
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error("Get chat admin user detail error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.get("/api/chat-admin/users/:userId/profile", async (req, res) => {
+  try {
+    const force = String(req.query.force || "").trim() === "true";
+    const result = await getOrBuildUserProfile(req.params.userId, { force });
+    if (!result.ok) {
+      return res.status(result.error === "user_not_found" ? 404 : 400).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Get chat admin user profile error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
 app.delete("/api/profiles/:slug", (req, res) => {
   try {
     const result = deleteProfile(req.params.slug);
@@ -627,7 +745,7 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
 
   try {
-    const { slug, messages } = req.body;
+    const { slug, messages, chatUserId } = req.body;
     const t1 = Date.now();
     console.log(`[Chat] 解析请求完成: ${t1 - t0}ms`);
 
@@ -650,7 +768,10 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const normalizedMessages = normalizeChatMessages(messages);
-    const systemPrompt = buildChatSystemPrompt(profile);
+    const userProfileData = chatUserId && isValidChatUserId(chatUserId)
+      ? loadStoredUserProfile(chatUserId)
+      : null;
+    const systemPrompt = buildChatSystemPrompt(profile, { userProfileData });
 
     const t3 = Date.now();
     console.log(`[Chat] 构建提示词完成: ${t3 - t2}ms`);
@@ -675,6 +796,7 @@ app.post("/api/chat", async (req, res) => {
     console.log(`[Chat] 拿到 stream: ${t4 - t3}ms`);
 
     let firstChunk = true;
+    let assistantContent = "";
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content;
       if (delta) {
@@ -682,8 +804,28 @@ app.post("/api/chat", async (req, res) => {
           console.log(`[Chat] 首块到达: ${Date.now() - t4}ms`);
           firstChunk = false;
         }
+        assistantContent += delta;
         res.write(JSON.stringify({ ok: true, delta }) + "\n");
       }
+    }
+
+    if (chatUserId && isValidChatUserId(chatUserId)) {
+      const conversationMessages = [
+        ...normalizeConversationMessages(messages),
+        {
+          id: "",
+          role: "assistant",
+          content: assistantContent,
+          label: profile.name || ""
+        }
+      ];
+      saveConversationState(chatUserId, slug, {
+        profileName: profile.name || "",
+        messages: conversationMessages
+      });
+      Promise.resolve()
+        .then(() => getOrBuildUserProfile(chatUserId))
+        .catch((err) => console.error("Refresh user profile after chat error:", err));
     }
 
     console.log(`[Chat] 全部完成: ${Date.now() - t0}ms`);

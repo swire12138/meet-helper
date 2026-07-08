@@ -1,0 +1,3333 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[a4paper,left=2.1cm,right=2.1cm,top=1.7cm,bottom=1.7cm,includeheadfoot,headheight=15pt,headsep=10pt,footskip=16pt]{geometry}
+\usepackage{fancyhdr}
+\usepackage{fancyvrb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{fontspec}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt
+\emergencystretch = 2em
+\IfFontExistsTF{Microsoft YaHei UI}{%
+  \setmainfont{Microsoft YaHei UI}
+  \setsansfont{Microsoft YaHei UI}
+  \setmonofont{Microsoft YaHei UI}
+}{%
+  \IfFontExistsTF{Noto Serif SC}{%
+    \setmainfont{Noto Serif SC}
+    \setsansfont{Noto Serif SC}
+    \setmonofont{Noto Serif SC}
+  }{%
+    \setmainfont{Arial}
+    \setsansfont{Arial}
+    \setmonofont{Courier New}
+  }
+}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{Page \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+\setlength{\parindent}{0pt}
+\raggedbottom
+\begin{document}
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+// ===== FILE BEGIN: screen-catch\api.js =====
+import path from "node:path";
+import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { setupAsrSocket } from "./asr.js";
+export function setupScreenCatchRoutes(app, server) {
+  const dataRootDir = path.resolve(process.cwd(), "..", "screen-catch", "data");
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const finalizeScript = path.join(__dirname, "asr_finalize.py");
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const ensureWithinDataRoot = (targetPath) => {
+    const resolved = path.resolve(dataRootDir, targetPath);
+    return resolved.startsWith(dataRootDir) ? resolved : null;
+  };
+  const formatSpeakerLabel = (rawSpeakerId, speakerMap) => {
+    if (rawSpeakerId === undefined || rawSpeakerId === null || rawSpeakerId === "") {
+      return "未知发言人";
+    }
+    const raw = String(rawSpeakerId);
+    if (!speakerMap.has(raw)) {
+      speakerMap.set(raw, speakerMap.size + 1);
+    }
+    return `发言人${speakerMap.get(raw)}`;
+  };
+  const formatTime = (ms = 0) => {
+    const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+    const hh = String(Math.floor(totalSeconds / 3600)).padStart(2, "0");
+    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+    const ss = String(totalSeconds % 60).padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  };
+  app.post("/api/screenshot", (req, res) => {
+    try {
+      const { image, sessionId } = req.body;
+      if (!image) return res.status(400).json({ ok: false, error: "missing_image" });
+      const sessionDirName = sessionId || "default-session";
+      const baseDir = path.resolve(process.cwd(), "..", "screen-catch", "data", sessionDirName);
+      const picsDir = path.join(baseDir, "pics");
+      if (!fs.existsSync(picsDir)) {
+        fs.mkdirSync(picsDir, { recursive: true });
+      }
+      const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+      const buffer = Buffer.from(base64Data, "base64");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `screenshot-${timestamp}.png`;
+      const filepath = path.join(picsDir, filename);
+      fs.writeFileSync(filepath, buffer);
+      res.json({ ok: true, filename });
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    } catch (e) {
+      console.error("Screenshot save error:", e);
+      res.status(500).json({ ok: false, error: "server_error" });
+    }
+  });
+  app.get("/api/asr/files/*", (req, res) => {
+    try {
+      const relativePath = req.params[0];
+      const filePath = ensureWithinDataRoot(relativePath || "");
+      if (!filePath || !fs.existsSync(filePath)) {
+        return res.status(404).json({ ok: false, error: "file_not_found" });
+      }
+      res.sendFile(filePath);
+    } catch (e) {
+      console.error("ASR file serve error:", e);
+      res.status(500).json({ ok: false, error: "server_error" });
+    }
+  });
+  app.post("/api/asr/finalize", async (req, res) => {
+    try {
+      const { sessionId, audioUrl } = req.body || {};
+      if (!sessionId && !audioUrl) {
+        return res.status(400).json({ ok: false, error: "missing_sessionId_or_audioUrl" });
+      }
+      let audioSource = audioUrl || "";
+      let transcriptFile = "";
+      if (sessionId) {
+        const sessionDir = ensureWithinDataRoot(sessionId);
+        if (!sessionDir) {
+          return res.status(400).json({ ok: false, error: "invalid_sessionId" });
+        }
+        const wavAudioFile = path.join(sessionDir, "full-audio.wav");
+        transcriptFile = path.join(sessionDir, "transcript.txt");
+        for (let i = 0; i < 20 && !fs.existsSync(wavAudioFile); i += 1) {
+          await wait(500);
+        }
+        if (!fs.existsSync(wavAudioFile)) {
+          return res.status(404).json({ ok: false, error: "full_audio_not_found" });
+        }
+        if (!audioSource) {
+          const publicBase = (process.env.ASR_AUDIO_PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+          if (!publicBase) {
+            return res.status(400).json({
+              ok: false,
+              error: "missing_ASR_AUDIO_PUBLIC_BASE_URL",
+              message: "请配置可公网访问当前服务的 ASR_AUDIO_PUBLIC_BASE_URL，供百炼拉取 full-audio.wav"
+            });
+          }
+          audioSource = `${publicBase}/api/asr/files/${encodeURIComponent(sessionId)}/full-audio.wav`;
+        }
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      }
+      const pythonArgs = [finalizeScript, audioSource];
+      const finalizeResult = await new Promise((resolve, reject) => {
+        const child = spawn("python", pythonArgs, {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            PYTHONUTF8: "1",
+            PYTHONIOENCODING: "utf-8"
+          }
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString();
+        });
+        child.on("error", reject);
+        child.on("close", (code) => {
+          try {
+            const parsed = stdout.trim() ? JSON.parse(stdout.trim()) : null;
+            resolve({ code, parsed, stderr: stderr.trim(), stdout: stdout.trim() });
+          } catch (err) {
+            reject(new Error(`finalize_json_parse_failed: ${stdout || stderr}`));
+          }
+        });
+      });
+      const { code, parsed, stderr } = finalizeResult;
+      if (code !== 0 || !parsed?.ok) {
+        return res.status(500).json({
+          ok: false,
+          error: parsed?.error || "finalize_failed",
+          message: parsed?.message || stderr || "离线说话人分离失败",
+          model: parsed?.model,
+          audioUrl: parsed?.audioUrl || audioSource
+        });
+      }
+      const speakerMap = new Map();
+      const transcriptEntries = (parsed.sentences || []).map((sentence) => {
+        const speaker = formatSpeakerLabel(sentence.speakerId, speakerMap);
+        return {
+          speaker,
+          text: sentence.text || "",
+          beginTime: Number(sentence.beginTime || 0),
+          endTime: Number(sentence.endTime || 0)
+        };
+      }).filter((entry) => entry.text);
+      if (transcriptFile) {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        const transcriptText = transcriptEntries.map((entry) => `[${entry.speaker}] ${entry.text}`).join("\n");
+        fs.writeFileSync(transcriptFile, transcriptText ? `${transcriptText}\n` : "", "utf8");
+      }
+      res.json({
+        ok: true,
+        data: {
+          model: parsed.model,
+          audioUrl: parsed.audioUrl || audioSource,
+          transcriptionUrl: parsed.transcriptionUrl || "",
+          lines: transcriptEntries.map((entry) => `[${formatTime(entry.beginTime)}] [${entry.speaker}] ${entry.text}`),
+          sentences: transcriptEntries
+        }
+      });
+    } catch (e) {
+      console.error("ASR finalize error:", e);
+      res.status(500).json({ ok: false, error: "server_error", message: e.message || "unknown_error" });
+    }
+  });
+  setupAsrSocket(server);
+}
+// ===== FILE END =====
+// ===== FILE BEGIN: screen-catch\asr.js =====
+import { WebSocketServer } from "ws";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+export function setupAsrSocket(server) {
+  const wss = new WebSocketServer({ server, path: "/ws/asr" });
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const bridgeScript = path.join(__dirname, "asr_bridge.py");
+  const createWavHeader = (dataSize, sampleRate = 16000, channels = 1, bitsPerSample = 16) => {
+    const header = Buffer.alloc(44);
+    const byteRate = sampleRate * channels * bitsPerSample / 8;
+    const blockAlign = channels * bitsPerSample / 8;
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(dataSize, 40);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    return header;
+  };
+  wss.on("connection", (ws, req) => {
+    console.log("Client connected to ASR WebSocket");
+    let sessionId = "default-session";
+    if (req && req.url) {
+      try {
+        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        sessionId = url.searchParams.get("sessionId") || "default-session";
+      } catch(e) {}
+    }
+    const apiKey = process.env.QWEN_API_KEY;
+    const safeWsSend = (obj) => {
+      if (ws.readyState === 1) { // WebSocket.OPEN
+        try {
+          ws.send(JSON.stringify(obj));
+        } catch (e) {
+          console.error("ws.send error:", e);
+        }
+      }
+    };
+    if (!apiKey) {
+      safeWsSend({ type: "error", message: "Missing QWEN_API_KEY in .env" });
+      ws.close();
+      return;
+    }
+    const baseDir = path.resolve(process.cwd(), "..", "screen-catch", "data", sessionId);
+    if (!fs.existsSync(baseDir)) {
+      fs.mkdirSync(baseDir, { recursive: true });
+    }
+    const transcriptFile = path.join(baseDir, "transcript.txt");
+    const rawAudioFile = path.join(baseDir, "full-audio.pcm");
+    const wavAudioFile = path.join(baseDir, "full-audio.wav");
+    fs.writeFileSync(transcriptFile, "", "utf8");
+    const audioWriteStream = fs.createWriteStream(rawAudioFile, { flags: "w" });
+    console.log("ASR transcript target:", transcriptFile);
+    let asrProcess = null;
+    let sentenceWritten = false;
+    let latestPartialText = "";
+    let fallbackFlushed = false;
+    let audioFinalized = false;
+    const speakerMap = new Map();
+    let nextSpeakerNumber = 1;
+    const mapSpeakerLabel = (rawSpeakerId) => {
+      if (rawSpeakerId === undefined || rawSpeakerId === null || rawSpeakerId === "") {
+        return "未知发言人";
+      }
+      const raw = String(rawSpeakerId);
+      if (!speakerMap.has(raw)) {
+        speakerMap.set(raw, nextSpeakerNumber);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        nextSpeakerNumber += 1;
+      }
+      return `发言人${speakerMap.get(raw)}`;
+    };
+    const sanitizeText = (text) => {
+      if (typeof text !== "string") return "";
+      const cleaned = text
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+        .replace(/[^A-Za-z0-9\u4e00-\u9fff\s.,!?;:'"()\-，。！？；：、（）]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(cleaned)) return "";
+      return cleaned.length > 2000 ? cleaned.slice(0, 2000) : cleaned;
+    };
+    const finalizeAudioFile = () => {
+      if (audioFinalized) return;
+      audioFinalized = true;
+      if (!fs.existsSync(rawAudioFile)) return;
+      let dataSize = 0;
+      try {
+        dataSize = fs.statSync(rawAudioFile).size;
+      } catch (err) {
+        console.error("Error stating raw audio file:", err);
+        return;
+      }
+      const wavStream = fs.createWriteStream(wavAudioFile, { flags: "w" });
+      wavStream.on("error", (err) => {
+        console.error("Error writing wav audio file:", err);
+      });
+      wavStream.write(createWavHeader(dataSize));
+      const rawReadStream = fs.createReadStream(rawAudioFile);
+      rawReadStream.on("error", (err) => {
+        console.error("Error reading raw audio file:", err);
+        wavStream.destroy(err);
+      });
+      wavStream.on("finish", () => {
+        console.log("ASR wav finalized:", wavAudioFile, "pcmBytes=", dataSize);
+      });
+      rawReadStream.pipe(wavStream);
+    };
+    const flushFallbackText = () => {
+      if (fallbackFlushed) return;
+      if (sentenceWritten) return;
+      const text = sanitizeText(latestPartialText || "");
+      if (!text) return;
+      fallbackFlushed = true;
+      const speakerLabel = "未知发言人";
+      const lineText = `[${speakerLabel}] ${text}\n`;
+      try {
+        fs.appendFileSync(transcriptFile, lineText, "utf8");
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        console.log("ASR fallback transcript bytes:", Buffer.byteLength(lineText, "utf8"));
+        safeWsSend({ type: "sentence", text, speakerId: speakerLabel });
+      } catch (err) {
+        console.error("Error writing fallback transcript file:", err);
+      }
+    };
+    try {
+      asrProcess = spawn("python", ["-u", bridgeScript], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          QWEN_API_KEY: apiKey,
+          ASR_MODEL: "paraformer-realtime-v2",
+          ASR_FORMAT: "pcm",
+          ASR_SAMPLE_RATE: "16000",
+          PYTHONUTF8: "1",
+          PYTHONIOENCODING: "utf-8"
+        }
+      });
+      asrProcess.stdin.on("error", (err) => {
+        if (err.code === "EPIPE" || err.code === "EOF") {
+          // Ignore EPIPE/EOF errors when python process closes its stdin
+        } else {
+          console.error("ASR process stdin error:", err);
+        }
+      });
+      audioWriteStream.on("error", (err) => {
+        console.error("ASR raw audio stream error:", err);
+      });
+      const outputReader = readline.createInterface({ input: asrProcess.stdout });
+      outputReader.on("line", (line) => {
+        try {
+          if (!line) return;
+          let msg;
+          try {
+            msg = JSON.parse(line);
+          } catch {
+            return;
+          }
+          const type = msg?.type;
+          if (type === "ready") {
+            safeWsSend({ type: "ready" });
+            console.log("Python ASR ready");
+            return;
+          }
+          if (type === "partial") {
+            const text = sanitizeText(msg.text || "");
+            if (text) {
+              latestPartialText = text;
+            }
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            safeWsSend({
+              type: "partial",
+              text,
+              time: msg.time || 0
+            });
+            return;
+          }
+          if (type === "sentence") {
+            sentenceWritten = true;
+            const text = sanitizeText(msg.text || "");
+            // 哪怕过滤后是空字符串，也应该告诉前端，让前端知道这部分处理完了，否则前端可能卡死或丢失状态
+            const speakerLabel = mapSpeakerLabel(msg.speakerId);
+            if (text) {
+              const lineText = `[${speakerLabel}] ${text}\n`;
+              try {
+                fs.appendFile(transcriptFile, lineText, "utf8", (err) => {
+                  if (err) console.error("Error writing transcript file:", err);
+                  else console.log("ASR sentence transcript bytes:", Buffer.byteLength(lineText, "utf8"));
+                });
+              } catch (err) {
+                console.error("Error writing transcript file:", err);
+              }
+              safeWsSend({
+                type: "sentence",
+                text,
+                speakerId: speakerLabel
+              });
+            }
+            return;
+          }
+          if (type === "completed") {
+            flushFallbackText();
+            safeWsSend({ type: "completed", file: transcriptFile });
+            return;
+          }
+          if (type === "error") {
+            const message = msg.message || "ASR bridge error";
+            console.error("Python ASR error:", message);
+            safeWsSend({ type: "error", message });
+          }
+        } catch (innerError) {
+           console.error("ASR outputReader line processing error:", innerError);
+        }
+      });
+      asrProcess.stderr.on("data", (chunk) => {
+        const message = chunk.toString().trim();
+        if (message) {
+          console.error("Python ASR stderr:", message);
+        }
+      });
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      asrProcess.on("close", (code) => {
+        flushFallbackText();
+        console.log("Python ASR process closed:", code);
+        if (code !== 0) {
+          safeWsSend({ type: "error", message: "ASR bridge process exited unexpectedly" });
+        }
+      });
+    } catch (e) {
+      console.error("ASR Init Error:", e);
+      safeWsSend({ type: "error", message: "ASR Init Error" });
+    }
+    let audioPacketCount = 0;
+    ws.on("message", (message, isBinary) => {
+      if (asrProcess && asrProcess.stdin && !asrProcess.stdin.destroyed) {
+        try {
+          if (!isBinary) {
+            return;
+          }
+          const audioBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
+          audioWriteStream.write(audioBuffer);
+          audioPacketCount += 1;
+          if (audioPacketCount <= 5) {
+            let sum = 0;
+            for (let i = 0; i + 1 < audioBuffer.length; i += 2) {
+              const sample = audioBuffer.readInt16LE(i);
+              sum += Math.abs(sample);
+            }
+            const avgAbs = audioBuffer.length > 1 ? Math.round(sum / (audioBuffer.length / 2)) : 0;
+            console.log(`ASR audio packet #${audioPacketCount}, bytes=${audioBuffer.length}, avgAbs=${avgAbs}`);
+          }
+          asrProcess.stdin.write(audioBuffer);
+        } catch (e) {
+          console.error("Failed to write to ASR process stdin:", e);
+        }
+      }
+    });
+    ws.on("close", () => {
+      console.log("Client disconnected from ASR WebSocket");
+      if (asrProcess && asrProcess.stdin && !asrProcess.stdin.destroyed) {
+        asrProcess.stdin.end();
+      }
+      if (!audioWriteStream.destroyed) {
+        audioWriteStream.end(() => {
+          finalizeAudioFile();
+        });
+      } else {
+        finalizeAudioFile();
+      }
+      flushFallbackText();
+      if (asrProcess && !asrProcess.killed) {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        setTimeout(() => {
+          if (!asrProcess.killed) {
+            asrProcess.kill("SIGTERM");
+          }
+        }, 1500);
+      }
+    });
+  });
+}
+// ===== FILE END =====
+// ===== FILE BEGIN: screen-catch\asr_bridge.py =====
+import json
+import os
+import sys
+import dashscope
+from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
+def emit(event):
+    sys.stdout.write(json.dumps(event, ensure_ascii=True) + "\n")
+    sys.stdout.flush()
+class Callback(RecognitionCallback):
+    @staticmethod
+    def _extract_speaker_id(sentence):
+        speaker_id = sentence.get("speaker_id")
+        if speaker_id is not None:
+            return speaker_id
+        speaker_id = sentence.get("speakerId")
+        if speaker_id is not None:
+            return speaker_id
+        speaker_id = sentence.get("spk_id")
+        if speaker_id is not None:
+            return speaker_id
+        words = sentence.get("words")
+        if isinstance(words, list):
+            counts = {}
+            for w in words:
+                if not isinstance(w, dict):
+                    continue
+                wid = w.get("speaker_id")
+                if wid is None:
+                    wid = w.get("speakerId")
+                if wid is None:
+                    continue
+                key = str(wid)
+                counts[key] = counts.get(key, 0) + 1
+            if counts:
+                return max(counts, key=counts.get)
+        return None
+    def on_open(self) -> None:
+        emit({"type": "ready"})
+    def on_complete(self) -> None:
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        emit({"type": "completed"})
+    def on_error(self, result) -> None:
+        message = getattr(result, "message", str(result))
+        request_id = getattr(result, "request_id", "")
+        emit({"type": "error", "message": message, "request_id": request_id})
+    def on_event(self, result: RecognitionResult) -> None:
+        sentence = result.get_sentence()
+        if not isinstance(sentence, dict):
+            return
+        text = sentence.get("text", "")
+        if not text:
+            return
+        begin_time = sentence.get("begin_time", 0)
+        end_time = sentence.get("end_time", 0)
+        emit({"type": "partial", "text": text, "time": end_time})
+        if RecognitionResult.is_sentence_end(sentence):
+            speaker_id = self._extract_speaker_id(sentence)
+            emit({"type": "sentence", "text": text, "speakerId": speaker_id, "time": end_time, "beginTime": begin_time})
+def load_api_key():
+    api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    if api_key:
+        return api_key
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == "QWEN_API_KEY" and v:
+                    return v
+                if k == "DASHSCOPE_API_KEY" and v:
+                    return v
+    return None
+def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    api_key = load_api_key()
+    if not api_key:
+        emit({"type": "error", "message": "Missing QWEN_API_KEY or DASHSCOPE_API_KEY"})
+        return 1
+    dashscope.api_key = api_key
+    model = os.getenv("ASR_MODEL", "paraformer-realtime-v2")
+    fmt = os.getenv("ASR_FORMAT", "pcm")
+    sample_rate = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
+    recognition = Recognition(
+        model=model,
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        format=fmt,
+        sample_rate=sample_rate,
+        language_hints=["zh", "en"],
+        diarization_enabled=True,
+        semantic_punctuation_enabled=False,
+        max_sentence_silence=800,
+        punctuation_prediction_enabled=True,
+        inverse_text_normalization_enabled=True,
+        callback=Callback(),
+    )
+    recognition.start()
+    try:
+        while True:
+            data = sys.stdin.buffer.read(3200)
+            if not data:
+                break
+            recognition.send_audio_frame(data)
+    except Exception as e:
+        emit({"type": "error", "message": f"ASR Stream Error: {str(e)}"})
+    finally:
+        try:
+            recognition.stop()
+        except Exception:
+            pass
+    return 0
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as e:
+        emit({"type": "error", "message": str(e)})
+        raise
+// ===== FILE END =====
+// ===== FILE BEGIN: screen-catch\asr_finalize.py =====
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import dashscope
+from dashscope.audio.asr import Transcription
+def load_api_key():
+    api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    if api_key:
+        return api_key
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    if os.path.exists(env_path):
+        content = open(env_path, "r", encoding="utf-8").read()
+        m = re.search(r"^QWEN_API_KEY=(.*)$", content, flags=re.M)
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+        m2 = re.search(r"^DASHSCOPE_API_KEY=(.*)$", content, flags=re.M)
+        if m2:
+            return m2.group(1).strip().strip('"').strip("'")
+    return None
+def extract_speaker_id(sentence):
+    if not isinstance(sentence, dict):
+        return None
+    for k in ("speaker_id", "speakerId", "spk_id"):
+        v = sentence.get(k)
+        if v is not None and v != "":
+            return v
+    words = sentence.get("words")
+    if isinstance(words, list):
+        counts = {}
+        for w in words:
+            if not isinstance(w, dict):
+                continue
+            wid = w.get("speaker_id")
+            if wid is None:
+                wid = w.get("speakerId")
+            if wid is None or wid == "":
+                continue
+            key = str(wid)
+            counts[key] = counts.get(key, 0) + 1
+        if counts:
+            return max(counts, key=counts.get)
+    return None
+def is_http_url(value):
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+def get_data_dir():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
+def build_public_audio_url(local_path):
+    public_base = (os.getenv("ASR_AUDIO_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not public_base:
+        return None
+    data_dir = get_data_dir()
+    abs_path = os.path.abspath(local_path)
+    try:
+        rel_path = os.path.relpath(abs_path, data_dir)
+    except ValueError:
+        return None
+    if rel_path.startswith(".."):
+        return None
+    rel_url = urllib.parse.quote(rel_path.replace("\\", "/"))
+    return f"{public_base}/api/asr/files/{rel_url}"
+def normalize_audio_source(audio_source):
+    if is_http_url(audio_source):
+        return audio_source
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    if not os.path.exists(audio_source):
+        return None
+    return build_public_audio_url(audio_source)
+def fetch_json(url):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8"))
+def extract_transcription_url(payload):
+    if not isinstance(payload, dict):
+        return None
+    output = payload.get("output") or {}
+    result = output.get("result")
+    if isinstance(result, dict) and result.get("transcription_url"):
+        return result.get("transcription_url")
+    results = output.get("results")
+    if isinstance(results, list):
+        for item in results:
+            if isinstance(item, dict) and item.get("transcription_url"):
+                return item.get("transcription_url")
+    return None
+def extract_sentences_from_payload(payload):
+    if not isinstance(payload, dict):
+        return []
+    transcripts = payload.get("transcripts")
+    if not isinstance(transcripts, list):
+        return []
+    sentences = []
+    for transcript in transcripts:
+        if not isinstance(transcript, dict):
+            continue
+        for s in transcript.get("sentences", []) or []:
+            if not isinstance(s, dict):
+                continue
+            text = s.get("text", "")
+            if not text:
+                continue
+            sentences.append(
+                {
+                    "text": text,
+                    "speakerId": extract_speaker_id(s),
+                    "beginTime": s.get("begin_time", 0),
+                    "endTime": s.get("end_time", 0),
+                }
+            )
+    return sentences
+def response_to_dict(response):
+    if isinstance(response, dict):
+        return {k: response_to_dict(v) for k, v in response.items()}
+    if isinstance(response, list):
+        return [response_to_dict(v) for v in response]
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    if isinstance(response, (str, int, float, bool)) or response is None:
+        return response
+    if hasattr(response, "__dict__"):
+        return {
+            k: response_to_dict(v)
+            for k, v in response.__dict__.items()
+            if not k.startswith("_")
+        }
+    return str(response)
+def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if len(sys.argv) < 2:
+        print(json.dumps({"ok": False, "error": "missing_wav_path"}, ensure_ascii=True))
+        return 1
+    audio_source = sys.argv[1]
+    if not is_http_url(audio_source) and not os.path.exists(audio_source):
+        print(json.dumps({"ok": False, "error": "audio_source_not_found"}, ensure_ascii=True))
+        return 1
+    api_key = load_api_key()
+    if not api_key:
+        print(json.dumps({"ok": False, "error": "missing_api_key"}, ensure_ascii=True))
+        return 1
+    dashscope.api_key = api_key
+    model = os.getenv("ASR_FINALIZE_MODEL", "paraformer-v2")
+    public_audio_url = normalize_audio_source(audio_source)
+    if not public_audio_url:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "missing_public_audio_url",
+                    "message": "Paraformer file transcription requires a public audio URL. Set ASR_AUDIO_PUBLIC_BASE_URL or pass an https URL.",
+                    "model": model,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 1
+    try:
+        task = Transcription.async_call(
+            model=model,
+            file_urls=[public_audio_url],
+            diarization_enabled=True,
+            timestamp_alignment_enabled=True,
+            language_hints=["zh", "en"],
+        )
+        result = Transcription.wait(task)
+        payload = response_to_dict(result)
+        try:
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            status_code = int(payload.get("status_code", 0))
+        except Exception:
+            status_code = 0
+        if status_code != 200:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": str(payload.get("message") or payload.get("code") or "finalize_asr_failed"),
+                        "model": model,
+                        "audioUrl": public_audio_url,
+                        "payload": payload,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+        transcription_url = extract_transcription_url(payload)
+        if not transcription_url:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "missing_transcription_url",
+                        "model": model,
+                        "audioUrl": public_audio_url,
+                        "payload": payload,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+        result_payload = fetch_json(transcription_url)
+        sentences = extract_sentences_from_payload(result_payload)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "model": model,
+                    "audioUrl": public_audio_url,
+                    "transcriptionUrl": transcription_url,
+                    "sentences": sentences,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0
+    except urllib.error.URLError as exc:
+        print(
+            json.dumps(
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+                {
+                    "ok": False,
+                    "error": "fetch_transcription_result_failed",
+                    "message": str(exc),
+                    "model": model,
+                    "audioUrl": public_audio_url,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 1
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "finalize_asr_failed",
+                    "message": str(exc),
+                    "model": model,
+                    "audioUrl": public_audio_url,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 1
+if __name__ == "__main__":
+    raise SystemExit(main())
+// ===== FILE END =====
+// ===== FILE BEGIN: server\src\analyze.js =====
+import { extractLikelyJsonObject, safeJsonParse } from "./json.js";
+import {
+  buildAnalyzeMessages,
+  buildCorrectTranscriptMessages,
+  buildFixJsonMessages,
+  buildFollowUpQuestionsMessages,
+  buildParticipantsMessages,
+  buildTopicsReportMessages,
+  OUTPUT_SCHEMA
+} from "./prompts.js";
+import { createQwenClient, getQwenConfig } from "./qwenClient.js";
+import { nowIso, writeNdjson } from "./ndjson.js";
+function validateShape(obj) {
+  if (!obj || typeof obj !== "object") return { ok: false, error: "not_object" };
+  for (const k of Object.keys(OUTPUT_SCHEMA)) {
+    if (typeof obj[k] !== "string") return { ok: false, error: `missing_or_not_string:${k}` };
+  }
+  return { ok: true };
+}
+async function completeJson(messages) {
+  const client = createQwenClient();
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  const { model, enableThinking, maxTokens } = getQwenConfig();
+  const resp = await client.chat.completions.create({
+    model,
+    messages,
+    temperature: 0.2,
+    max_tokens: maxTokens,
+    extra_body: { enable_thinking: enableThinking }
+  });
+  return resp.choices?.[0]?.message?.content ?? "";
+}
+export async function analyzeTranscript(transcriptText) {
+  const raw = await completeJson(buildAnalyzeMessages(transcriptText));
+  const extracted = extractLikelyJsonObject(raw) ?? raw;
+  const parsed1 = safeJsonParse(extracted);
+  if (parsed1.ok) {
+    const shape = validateShape(parsed1.value);
+    if (shape.ok) return { ok: true, value: parsed1.value, raw };
+  }
+  const fixedRaw = await completeJson(buildFixJsonMessages(raw));
+  const fixedExtracted = extractLikelyJsonObject(fixedRaw) ?? fixedRaw;
+  const parsed2 = safeJsonParse(fixedExtracted);
+  if (!parsed2.ok) return { ok: false, error: "json_parse_failed", raw, fixedRaw };
+  const shape2 = validateShape(parsed2.value);
+  if (!shape2.ok) return { ok: false, error: shape2.error, raw, fixedRaw };
+  return { ok: true, value: parsed2.value, raw };
+}
+async function streamMarkdownSection({ section, messages, res }) {
+  const client = createQwenClient();
+  const { model, maxTokens } = getQwenConfig();
+  const startedAt = Date.now();
+  let firstTokenAt = null;
+  writeNdjson(res, { type: "log", ts: nowIso(), message: `开始生成：${section}` });
+  const stream = await client.chat.completions.create({
+    model,
+    messages,
+    temperature: 0.2,
+    max_tokens: maxTokens,
+    stream: true,
+    extra_body: { enable_thinking: false }
+  });
+  let content = "";
+  for await (const part of stream) {
+    const delta = part.choices?.[0]?.delta?.content ?? "";
+    if (!delta) continue;
+    if (firstTokenAt === null) {
+      firstTokenAt = Date.now();
+      writeNdjson(res, {
+        type: "log",
+        ts: nowIso(),
+        message: `${section} 首token耗时：${firstTokenAt - startedAt}ms`
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      });
+    }
+    content += delta;
+    writeNdjson(res, { type: "delta", ts: nowIso(), section, delta });
+  }
+  const endedAt = Date.now();
+  writeNdjson(res, { type: "section_done", ts: nowIso(), section });
+  writeNdjson(res, {
+    type: "log",
+    ts: nowIso(),
+    message: `${section} 生成耗时：${endedAt - startedAt}ms`
+  });
+  return {
+    content: content.trim(),
+    startedAt,
+    firstTokenAt,
+    endedAt
+  };
+}
+export async function analyzeCaseContent(images, transcriptText, contextTranscriptText, previousAnalysis) {
+  const client = createQwenClient();
+  const schemaStr = JSON.stringify(OUTPUT_SCHEMA, null, 2);
+  const contentArray = [];
+  let prevStr = previousAnalysis;
+  if (typeof previousAnalysis === "object" && previousAnalysis !== null) {
+    prevStr = JSON.stringify({
+      participantsAndViewpointsMd: previousAnalysis.participantsAndViewpointsMd,
+      topicsReportMd: previousAnalysis.topicsReportMd,
+      followUpQuestionsMd: previousAnalysis.followUpQuestionsMd,
+      glossaryMd: previousAnalysis.glossaryMd
+    }, null, 2);
+  }
+  // 提前在这里声明并处理好截断版本，保证 Agent 1 和 Agent 2 都能访问到
+  let trimmedPrevStr = prevStr || "";
+  if (trimmedPrevStr.length > 20000) {
+    trimmedPrevStr = trimmedPrevStr.slice(-20000) + "\n...（因长度限制已截断部分早期历史总结）";
+  }
+  let trimmedContext = contextTranscriptText || '';
+  if (trimmedContext.length > 8000) {
+    trimmedContext = "...\n" + trimmedContext.slice(-8000);
+  }
+  let trimmedTranscript = transcriptText || '';
+  if (trimmedTranscript.length > 10000) {
+    trimmedTranscript = "...\n" + trimmedTranscript.slice(-10000);
+  }
+  if (prevStr) {
+    contentArray.push({ type: "text", text: `这是前次生成的分析总结结果（不包含历史转写原文）：\n\n${trimmedPrevStr}\n\n` });
+    contentArray.push({ type: "text", text: `这是为了保持连贯性提供的上一段转写上下文：\n${trimmedContext || '（无上下文）'}\n\n` });
+    contentArray.push({ type: "text", text: `以下是最新增加的会议语音转写记录：\n${trimmedTranscript || '（无新增转写）'}\n\n` });
+    contentArray.push({ type: "text", text: `以下是最新增加的会议截屏（附带截屏时间）：` });
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  } else {
+    contentArray.push({ type: "text", text: `这是一场会议的语音转写记录：\n${trimmedTranscript}\n\n以下是会议过程中的多张截屏，并附带了截屏时间：` });
+  }
+  if (images.length === 0) {
+    contentArray.push({ type: "text", text: `\n（无新增截屏）` });
+  } else {
+    for (const img of images) {
+      contentArray.push({ type: "text", text: `\n[时间: ${img.time}]` });
+      contentArray.push({ type: "image_url", image_url: { url: img.imageUrl } });
+    }
+  }
+  const outputReq = [
+    `\n\n请结合多张会议截屏（注意时间顺序与内容变化）以及会议语音转写记录，深入分析并输出技术报告。`,
+    `输出要求：`,
+    `- 只输出JSON，不要输出任何额外文字。`,
+    `- JSON必须严格符合以下键结构，值全部为Markdown字符串：`,
+    schemaStr,
+    `- 五个字段分别对应前端独立板块展示，内容不要互相混杂：`,
+    `  correctedTranscriptMd: (此字段已在前端暂时屏蔽，你可以返回空字符串或简略信息以节省时间，因为不再展示)`,
+    `  participantsAndViewpointsMd: 参与者与观点（每人单独小节，包含其对各议题的立场/理解与变化）。【重要】：这部分必须在旧有总结的基础上扩充，绝对不能缩略、删减或丢弃前次分析中已经存在的历史人员和观点！`,
+    `  topicsReportMd: 议题报告（按时间顺序逐议题展开，必须包含：初始现状、讨论过程关键点、最终共识、前后差异、引用原话/片段）。【极其重要】：像写流水账一样往下写，这部分必须在旧有总结的基础上扩充，绝对不能缩略、删减或丢弃前次分析中已经存在的历史议题和报告！如果有新议题，追加在后面。`,
+    `  followUpQuestionsMd: 追问清单（按议题组织，包含：提问对象、原始问题、提问原因）。【极其重要】：你必须提出怀疑有错误、逻辑有冲突、或与大方向（架构/场景适用性等）有关的高维技术探讨问题！不要去抠字眼（例如不要问"通信量减少85是什么指标/单位是什么"这类细枝末节）。而应该像架构师一样提问（例如："他这个算法对prefill阶段应该有用，但对decode阶段呢？" 或 "改为sharememory base后，开空间能开对吗？"）。【极其重要】：这部分必须在旧有清单的基础上扩充，绝对不能缩略、删减或丢弃前次分析中已经存在的历史追问问题！`,
+    `  glossaryMd: 术语表（按字母或拼音或出现顺序均可，每项给出解释与在本会议中的语境）。`
+  ];
+  if (prevStr) {
+    outputReq.push(`\n重要约束：
+1. 请在"前次生成的分析总结结果"基础上，结合新增内容进行全局更新。
+2. 【极端重要】对于 \`correctedTranscriptMd\`，(前端已屏蔽，直接返回空字符串即可)。
+3. 对于其他 4 个分析字段（参与者、议题、追问、术语表），请综合前次结果与新增内容，输出一份【包含之前所有内容的完整更新版】的报告。
+   【极其重要警告】：你绝对、绝对不能为了"简明扼要"而删掉前次结果中已经列出的历史人员、历史观点、历史议题或历史追问！所有的历史信息必须原封不动地保留（除非发现了确凿的错误需要修正）。如果有新的观点或议题，请合理插入或追加到相应部分。
+4. 如果除了转写外，其他分析字段无明显变化，保持前次分析的内容原样输出即可。`);
+  }
+  contentArray.push({ type: "text", text: outputReq.join("\n") });
+  const { model, maxTokens } = getQwenConfig();
+  // 如果没有新增截屏，退回到使用配置中的普通文本大模型，以防 qwen-vl 报错无图
+  const targetModel = images.length === 0 ? model : "qwen-vl-max";
+  const messages = [
+    {
+      role: "system",
+      content: "你是一个专业的会议分析助手。你需要结合用户提供的屏幕截图和会议语音转写记录，输出指定格式的 JSON 案例分析报告。"
+    },
+    {
+      role: "user",
+      content: targetModel === "qwen-vl-max" ? contentArray : contentArray.map(c => c.text).join("\n")
+    }
+  ];
+  const resp = await client.chat.completions.create({
+    model: targetModel,
+    messages,
+    temperature: 0.2,
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    max_tokens: maxTokens || 8192
+  });
+    const raw = resp.choices?.[0]?.message?.content ?? "";
+    let extracted = extractLikelyJsonObject(raw) ?? raw;
+    let parsed = safeJsonParse(extracted);
+    if (!parsed.ok) {
+      // 增加一行正则替换：如果模型在 JSON 中输出了不合法的转义换行符或结尾多余逗号，尝试先用模型自我修复
+      const fixedRaw = await completeJson(buildFixJsonMessages(raw));
+      extracted = extractLikelyJsonObject(fixedRaw) ?? fixedRaw;
+      parsed = safeJsonParse(extracted);
+    }
+    if (parsed.ok) {
+      // ===== 跳过 Agent 2 调用，直接返回，以节省时间 =====
+      return parsed.value;
+    }
+    // 即使解析失败，我们也不直接报错中断整个会议，而是返回一个部分成功的默认结构，或者打平抛出
+    console.error("JSON Parse failed after fix:", parsed.error, "RAW:", raw);
+    // 如果之前有数据，退回使用之前的数据
+    if (typeof previousAnalysis === "object" && previousAnalysis !== null) {
+      return previousAnalysis;
+    }
+    // 否则抛出明确的错误，告知前端发生了 JSON 解析失败
+    throw new Error(`Failed to generate valid JSON analysis. Parse Error: ${parsed.error?.message || "unknown"}`);
+  }
+export async function analyzeTranscriptStream(transcriptText, res) {
+  const runStartedAt = Date.now();
+  let globalFirstTokenAt = null;
+  writeNdjson(res, { type: "log", ts: nowIso(), message: "读取转写文本完成" });
+  // 暂时屏蔽由大模型生成修正后的转写，直接使用原始的实时转写内容
+  // 并且将后续的依赖全部替换为原始的实时转写 (transcriptText)，保证其他功能正常运行
+  const correctedTranscriptMd = transcriptText;
+  if (globalFirstTokenAt === null) {
+    globalFirstTokenAt = Date.now();
+  }
+  const participantsAndViewpointsMd = (
+    await streamMarkdownSection({
+      section: "participantsAndViewpointsMd",
+      messages: buildParticipantsMessages(transcriptText),
+      res
+    })
+  ).content;
+  const topicsReportMd = (
+    await streamMarkdownSection({
+      section: "topicsReportMd",
+      messages: buildTopicsReportMessages(transcriptText),
+      res
+    })
+  ).content;
+  const followUpQuestionsMd = (
+    await streamMarkdownSection({
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      section: "followUpQuestionsMd",
+      messages: buildFollowUpQuestionsMessages(transcriptText),
+      res
+    })
+  ).content;
+  const glossaryMd = "";
+  const runEndedAt = Date.now();
+  writeNdjson(res, { type: "log", ts: nowIso(), message: `总耗时：${runEndedAt - runStartedAt}ms` });
+  writeNdjson(res, {
+    type: "done",
+    ts: nowIso(),
+    data: {
+      correctedTranscriptMd,
+      participantsAndViewpointsMd,
+      topicsReportMd,
+      followUpQuestionsMd,
+      glossaryMd
+    }
+  });
+}
+// ===== FILE END =====
+// ===== FILE BEGIN: server\src\chatStore.js =====
+import fs from "node:fs";
+import path from "node:path";
+function getChatUsersRoot() {
+  return path.resolve(process.cwd(), "..", "screen-catch", "data", "chat-users");
+}
+function getChatUsersDir() {
+  return path.join(getChatUsersRoot(), "users");
+}
+function getUserDir(userId) {
+  return path.join(getChatUsersDir(), userId);
+}
+function getUserMetaPath(userId) {
+  return path.join(getUserDir(userId), "meta.json");
+}
+function getConversationDir(userId) {
+  return path.join(getUserDir(userId), "conversations");
+}
+function getConversationPath(userId, slug) {
+  return path.join(getConversationDir(userId), `${slug}.json`);
+}
+function getSeqPath() {
+  return path.join(getChatUsersRoot(), "user-id-seq.json");
+}
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+function ensureChatStoreDirs() {
+  ensureDir(getChatUsersRoot());
+  ensureDir(getChatUsersDir());
+}
+function readJson(filePath, fallback) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+function formatYYMMDD(date = new Date()) {
+  const year = String(date.getFullYear()).slice(-2);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+function randomSuffix() {
+  return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+}
+function sanitizeStoredMessages(messages = []) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((item) => item && typeof item.content === "string")
+    .map((item) => {
+      const role = item.role === "user" || item.role === "spectator" ? item.role : "assistant";
+      return {
+        id: typeof item.id === "string" ? item.id : "",
+        role,
+        content: item.content,
+        label: typeof item.label === "string" ? item.label : ""
+      };
+    });
+}
+function summarizeConversation(conversation) {
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  const lastMessage = messages[messages.length - 1];
+  return {
+    slug: conversation.slug || "",
+    profileName: conversation.profileName || "",
+    messageCount: messages.length,
+    updatedAt: conversation.updatedAt || conversation.createdAt || "",
+    lastMessagePreview: lastMessage?.content ? lastMessage.content.slice(0, 120) : ""
+  };
+}
+export function isValidChatUserId(userId) {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  return /^\d{10}$/.test(String(userId || "").trim());
+}
+export function allocateChatUserId() {
+  ensureChatStoreDirs();
+  const seqPath = getSeqPath();
+  const seqState = readJson(seqPath, {});
+  const prefix = formatYYMMDD();
+  const usedSuffixes = new Set(Array.isArray(seqState[prefix]?.used_suffixes) ? seqState[prefix].used_suffixes : []);
+  let suffix = "";
+  for (let i = 0; i < 200; i += 1) {
+    const candidate = randomSuffix();
+    if (!usedSuffixes.has(candidate)) {
+      suffix = candidate;
+      break;
+    }
+  }
+  if (!suffix) {
+    for (let i = 0; i < 10000; i += 1) {
+      const candidate = String(i).padStart(4, "0");
+      if (!usedSuffixes.has(candidate)) {
+        suffix = candidate;
+        break;
+      }
+    }
+  }
+  if (!suffix) {
+    throw new Error("user_id_exhausted");
+  }
+  usedSuffixes.add(suffix);
+  seqState[prefix] = { used_suffixes: Array.from(usedSuffixes).sort() };
+  writeJson(seqPath, seqState);
+  const userId = `${prefix}${suffix}`;
+  return ensureChatUser(userId).data;
+}
+export function ensureChatUser(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!isValidChatUserId(normalizedUserId)) {
+    return { ok: false, error: "invalid_user_id" };
+  }
+  ensureChatStoreDirs();
+  const userDir = getUserDir(normalizedUserId);
+  const conversationsDir = getConversationDir(normalizedUserId);
+  ensureDir(userDir);
+  ensureDir(conversationsDir);
+  const metaPath = getUserMetaPath(normalizedUserId);
+  const existing = readJson(metaPath, null);
+  const now = new Date().toISOString();
+  const meta = existing || {
+    userId: normalizedUserId,
+    createdAt: now,
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    updatedAt: now
+  };
+  meta.updatedAt = now;
+  writeJson(metaPath, meta);
+  return { ok: true, data: meta };
+}
+export function getChatUser(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!isValidChatUserId(normalizedUserId)) {
+    return null;
+  }
+  return readJson(getUserMetaPath(normalizedUserId), null);
+}
+export function saveConversationState(userId, slug, { profileName = "", messages = [], autopilotReport = "" } = {}) {
+  const ensured = ensureChatUser(userId);
+  if (!ensured.ok) return ensured;
+  const normalizedSlug = String(slug || "").trim();
+  if (!normalizedSlug) {
+    return { ok: false, error: "missing_slug" };
+  }
+  const filePath = getConversationPath(ensured.data.userId, normalizedSlug);
+  const existing = readJson(filePath, null);
+  const now = new Date().toISOString();
+  const conversation = {
+    userId: ensured.data.userId,
+    slug: normalizedSlug,
+    profileName: String(profileName || existing?.profileName || "").trim(),
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    messages: sanitizeStoredMessages(messages),
+    autopilotReport: typeof autopilotReport === "string" ? autopilotReport : ""
+  };
+  writeJson(filePath, conversation);
+  const meta = {
+    ...ensured.data,
+    updatedAt: now
+  };
+  writeJson(getUserMetaPath(ensured.data.userId), meta);
+  return { ok: true, data: conversation };
+}
+export function loadConversationState(userId, slug) {
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedSlug = String(slug || "").trim();
+  if (!isValidChatUserId(normalizedUserId) || !normalizedSlug) {
+    return { ok: false, error: "invalid_user_id_or_slug" };
+  }
+  const conversation = readJson(getConversationPath(normalizedUserId, normalizedSlug), null);
+  if (!conversation) {
+    return {
+      ok: true,
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      data: {
+        userId: normalizedUserId,
+        slug: normalizedSlug,
+        profileName: "",
+        createdAt: "",
+        updatedAt: "",
+        messages: [],
+        autopilotReport: ""
+      }
+    };
+  }
+  return {
+    ok: true,
+    data: {
+      ...conversation,
+      messages: sanitizeStoredMessages(conversation.messages),
+      autopilotReport: typeof conversation.autopilotReport === "string" ? conversation.autopilotReport : ""
+    }
+  };
+}
+export function listUserConversations(userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!isValidChatUserId(normalizedUserId)) {
+    return [];
+  }
+  const conversationsDir = getConversationDir(normalizedUserId);
+  if (!fs.existsSync(conversationsDir)) return [];
+  const items = [];
+  for (const entry of fs.readdirSync(conversationsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const conversation = readJson(path.join(conversationsDir, entry.name), null);
+    if (conversation) {
+      items.push(summarizeConversation(conversation));
+    }
+  }
+  return items.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+export function listChatUsers() {
+  ensureChatStoreDirs();
+  const users = [];
+  for (const entry of fs.readdirSync(getChatUsersDir(), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const meta = readJson(getUserMetaPath(entry.name), null);
+    if (!meta) continue;
+    const conversations = listUserConversations(entry.name);
+    users.push({
+      userId: meta.userId || entry.name,
+      createdAt: meta.createdAt || "",
+      updatedAt: meta.updatedAt || "",
+      conversationCount: conversations.length,
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      conversations
+    });
+  }
+  return users.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+export function getChatUserDetail(userId) {
+  const meta = getChatUser(userId);
+  if (!meta) return null;
+  const conversations = [];
+  const conversationsDir = getConversationDir(meta.userId);
+  if (fs.existsSync(conversationsDir)) {
+    for (const entry of fs.readdirSync(conversationsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const conversation = readJson(path.join(conversationsDir, entry.name), null);
+      if (!conversation) continue;
+      conversations.push({
+        ...conversation,
+        messages: sanitizeStoredMessages(conversation.messages)
+      });
+    }
+  }
+  conversations.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  return {
+    userId: meta.userId,
+    createdAt: meta.createdAt || "",
+    updatedAt: meta.updatedAt || "",
+    conversationCount: conversations.length,
+    conversations
+  };
+}
+// ===== FILE END =====
+// ===== FILE BEGIN: server\src\env.js =====
+import dotenv from "dotenv";
+import path from "node:path";
+export function loadEnv() {
+  const candidates = [
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.cwd(), "..", ".env")
+  ];
+  for (const p of candidates) {
+    const result = dotenv.config({ path: p, override: true });
+    if (!result.error) return;
+  }
+}
+export function getRequiredEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+// ===== FILE END =====
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+// ===== FILE BEGIN: server\src\index.js =====
+import cors from "cors";
+import express from "express";
+import multer from "multer";
+import path from "node:path";
+import fs from "node:fs";
+import http from "node:http";
+import { loadEnv } from "./env.js";
+import { analyzeTranscript, analyzeTranscriptStream, analyzeCaseContent } from "./analyze.js";
+import { createQwenClient, getQwenConfig } from "./qwenClient.js";
+import { setupScreenCatchRoutes } from "../../screen-catch/api.js";
+import {
+  buildProfileForSpeaker,
+  createManualProfile,
+  mergeProfileForSpeaker,
+  upsertWorkProfileFromAnalysis,
+  loadProfileBySlug,
+  listProfiles,
+  updateProfileNameBySlug,
+  updateSpeakerName,
+  guessSpeakers,
+  extractSpeakersFromTranscript,
+  deleteProfile
+} from "./profileBuilder.js";
+import {
+  allocateChatUserId,
+  ensureChatUser,
+  getChatUser,
+  saveConversationState,
+  loadConversationState,
+  listChatUsers,
+  getChatUserDetail,
+  isValidChatUserId
+} from "./chatStore.js";
+import { getOrBuildUserProfile, loadStoredUserProfile } from "./userProfile.js";
+import { buildChatSystemPrompt } from "./profilePrompts.js";
+import { extractLikelyJsonObject, safeJsonParse } from "./json.js";
+// 配置日志同时输出到文件
+const logPath = path.resolve(process.cwd(), "../../screen-catch", "data", "server.log");
+const logDir = path.dirname(logPath);
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+console.log = (...args) => {
+  const logLine = `[${new Date().toISOString()}] ${args.map(arg =>
+    typeof arg === "object" ? JSON.stringify(arg) : String(arg)
+  ).join(" ")}\n`;
+  fs.appendFileSync(logPath, logLine, "utf8");
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  originalConsoleLog.apply(console, args);
+};
+console.error = (...args) => {
+  const logLine = `[${new Date().toISOString()}] ERROR: ${args.map(arg =>
+    typeof arg === "object" ? JSON.stringify(arg) : String(arg)
+  ).join(" ")}\n`;
+  fs.appendFileSync(logPath, logLine, "utf8");
+  originalConsoleError.apply(console, args);
+};
+loadEnv();
+const app = express();
+const server = http.createServer(app);
+app.use(cors());
+app.use(express.json({ limit: "50mb" }));
+setupScreenCatchRoutes(app, server);
+const staticDir = path.resolve(process.cwd(), "..", "web-static");
+app.use(express.static(staticDir));
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+function normalizeChatMessages(messages = []) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((item) => item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string")
+    .map((item) => ({ role: item.role, content: item.content }));
+}
+function normalizeConversationMessages(messages = []) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((item) => item && typeof item.content === "string")
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : "",
+      role: item.role === "user" || item.role === "spectator" ? item.role : "assistant",
+      content: item.content,
+      label: typeof item.label === "string" ? item.label : ""
+    }));
+}
+function formatChatHistory(messages = []) {
+  if (!messages.length) return "（暂无对话历史）";
+  return messages
+    .map((item) => `${item.role === "user" ? "用户" : "模拟同事"}：${item.content}`)
+    .join("\n\n");
+}
+function formatAutopilotTranscript(items = []) {
+  if (!Array.isArray(items) || items.length === 0) return "（暂无自动讨论记录）";
+  return items
+    .filter((item) => item && typeof item.content === "string")
+    .map((item) => `${item.speaker === "spectator" ? "旁观者" : "模拟同事"}：${item.content}`)
+    .join("\n\n");
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+}
+function parseJsonContent(raw) {
+  if (!raw || typeof raw !== "string") return { ok: false, error: "empty_content" };
+  const extracted = extractLikelyJsonObject(raw) ?? raw;
+  const parsed = safeJsonParse(extracted);
+  if (parsed.ok) return parsed;
+  const cleaned = raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+  return safeJsonParse(extractLikelyJsonObject(cleaned) ?? cleaned);
+}
+async function completeJsonObject(messages, { temperature = 0.2, maxTokens } = {}) {
+  const qwenClient = createQwenClient();
+  const { model, maxTokens: defaultMaxTokens } = getQwenConfig();
+  const resp = await qwenClient.chat.completions.create({
+    model,
+    messages,
+    temperature,
+    max_tokens: maxTokens || Math.min(defaultMaxTokens, 2048),
+    response_format: { type: "json_object" },
+    extra_body: { enable_thinking: false }
+  });
+  return resp.choices?.[0]?.message?.content ?? "";
+}
+async function streamCompletionAsText(res, messages, { temperature = 0.2, maxTokens } = {}) {
+  const qwenClient = createQwenClient();
+  const { model, maxTokens: defaultMaxTokens } = getQwenConfig();
+  const stream = await qwenClient.chat.completions.create({
+    model,
+    messages,
+    max_tokens: maxTokens || defaultMaxTokens,
+    stream: true,
+    temperature,
+    extra_body: { enable_thinking: false }
+  });
+  for await (const chunk of stream) {
+    const delta = chunk.choices?.[0]?.delta?.content;
+    if (delta) {
+      res.write(delta);
+    }
+  }
+}
+function buildSpectatorSuggestionMessages({ profile, messages, draftMessage, pendingSuggestions, manual }) {
+  const chatSystem = buildChatSystemPrompt(profile);
+  const historyText = formatChatHistory(messages);
+  const suggestionText = Array.isArray(pendingSuggestions) && pendingSuggestions.length > 0
+    ? pendingSuggestions.map((item, idx) => `- ${idx + 1}. ${item.topic || "未命名建议"}：${item.assistantPrompt || item.userAsk || ""}`).join("\n")
+    : "（当前没有待处理建议）";
+  const draftText = typeof draftMessage === "string" && draftMessage.trim() ? draftMessage.trim() : "（当前输入框为空）";
+  const system = [
+    "你是一个旁观者智能体（Spectator）。",
+    "你的职责不是直接替用户回答，而是在旁边观察“用户与模拟同事”的对话，并在合适时机提出一个高价值建议。",
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+                  <div class="hint-block">{{ item.assistantPrompt }}</div>
+                  <div class="card-meta" v-if="item.reasoning" style="margin-top:6px;">理由：{{ item.reasoning }}</div>
+                  <div class="suggestion-actions">
+                    <button class="btn secondary" @click="applySuggestion(item)">填入输入框</button>
+                    <button class="btn secondary" @click="sendSuggestionNow(item)">直接发送</button>
+                    <button class="btn secondary" @click="dismissSuggestion(item.id)">忽略</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="panel-section" v-if="autopilotReport">
+            <div class="section-header"><div class="section-title">讨论总结</div></div>
+            <div class="report-box"><div class="message-content md" v-html="renderMarkdown(autopilotReport)"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const { createApp, ref, computed, nextTick, watch } = Vue;
+      const ACTIVE_CHAT_USER_KEY = "meet-helper.active.chat.user";
+      createApp({
+        setup() {
+          const initialSlug = new URLSearchParams(window.location.search).get("slug");
+          const profiles = ref([]);
+          const selectedSlug = ref(null);
+          const messages = ref([]);
+          const inputText = ref("");
+          const isTyping = ref(false);
+          const messagesRef = ref(null);
+          const inputRef = ref(null);
+          const pendingSuggestions = ref([]);
+          const spectatorLoading = ref(false);
+          const spectatorStatus = ref("Spectator 会在合适时机主动提示。");
+          const autopilotRunning = ref(false);
+          const autopilotMode = ref("normal");
+          const autopilotTranscript = ref([]);
+          const autopilotReport = ref("");
+          const autopilotStatus = ref("尚未开始自动讨论");
+          const autopilotRound = ref(0);
+          const autopilotStopRequested = ref(false);
+          const chatUserId = ref("");
+          const loginInput = ref("");
+          const loginLoading = ref(false);
+          const loginStatus = ref("未登录编号用户");
+          const conversationStatus = ref("请选择编号并开始对话。");
+          const loadingConversation = ref(false);
+          let suggestionTimer = null;
+          let autopilotToken = 0;
+          const selectedProfile = computed(() => profiles.value.find((p) => p.slug === selectedSlug.value) || null);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+          const canInteract = computed(() => Boolean(chatUserId.value && selectedSlug.value));
+          function newId(prefix) {
+            return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+          }
+          function renderMarkdown(text) {
+            if (!text) return "";
+            return DOMPurify.sanitize(marked.parse(text));
+          }
+          function messageClass(msg) {
+            if (msg.role === "spectator") return "spectator";
+            return msg.role === "user" ? "user" : "assistant";
+          }
+          function messageAvatar(msg) {
+            if (msg.role === "user") return "我";
+            if (msg.role === "spectator") return "S";
+            return selectedProfile.value ? selectedProfile.value.name.charAt(0) : "AI";
+          }
+          function updateUrlSlug(slug) {
+            const url = new URL(window.location.href);
+            if (slug) {
+              url.searchParams.set("slug", slug);
+            } else {
+              url.searchParams.delete("slug");
+            }
+            history.replaceState(null, "", url.toString());
+          }
+          function scrollToBottom() {
+            nextTick(() => {
+              if (messagesRef.value) {
+                messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
+              }
+            });
+          }
+          function focusInput() {
+            nextTick(() => {
+              if (inputRef.value) inputRef.value.focus();
+            });
+          }
+          function resetSuggestionTimer() {
+            if (suggestionTimer) {
+              clearTimeout(suggestionTimer);
+              suggestionTimer = null;
+            }
+          }
+          function resetTransientState() {
+            isTyping.value = false;
+            pendingSuggestions.value = [];
+            spectatorStatus.value = "Spectator 会在合适时机主动提示。";
+            autopilotRunning.value = false;
+            autopilotMode.value = "normal";
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            autopilotTranscript.value = [];
+            autopilotStatus.value = "尚未开始自动讨论";
+            autopilotRound.value = 0;
+            autopilotStopRequested.value = false;
+          }
+          function clearConversationState() {
+            messages.value = [];
+            inputText.value = "";
+            autopilotReport.value = "";
+            resetTransientState();
+          }
+          async function loadProfiles() {
+            try {
+              const res = await fetch("/api/profiles");
+              const data = await res.json();
+              if (!data.ok) return;
+              profiles.value = data.data || [];
+              if (!selectedSlug.value && profiles.value.length > 0) {
+                const preferred = profiles.value.find((item) => item.slug === initialSlug);
+                selectedSlug.value = preferred ? preferred.slug : profiles.value[0].slug;
+                updateUrlSlug(selectedSlug.value);
+              }
+            } catch (e) {
+              console.error("Failed to load profiles:", e);
+            }
+          }
+          async function loadConversation() {
+            if (!chatUserId.value || !selectedSlug.value) {
+              clearConversationState();
+              return;
+            }
+            resetSuggestionTimer();
+            loadingConversation.value = true;
+            resetTransientState();
+            inputText.value = "";
+            conversationStatus.value = `正在加载编号 ${chatUserId.value} 的独立记录...`;
+            try {
+              const res = await fetch(`/api/chat-users/${encodeURIComponent(chatUserId.value)}/conversations/${encodeURIComponent(selectedSlug.value)}`);
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              messages.value = Array.isArray(data.data.messages) ? data.data.messages : [];
+              autopilotReport.value = data.data.autopilotReport || "";
+              conversationStatus.value = messages.value.length > 0 ? "已加载该编号下的历史记录。" : "当前编号下还没有这位同事的历史记录。";
+              scrollToBottom();
+            } catch (e) {
+              console.error("Load conversation error:", e);
+              messages.value = [];
+              autopilotReport.value = "";
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+              conversationStatus.value = `加载历史失败：${e.message || "network_error"}`;
+            } finally {
+              loadingConversation.value = false;
+            }
+          }
+          async function persistConversationState() {
+            if (!chatUserId.value || !selectedSlug.value || !selectedProfile.value) return;
+            try {
+              await fetch(`/api/chat-users/${encodeURIComponent(chatUserId.value)}/conversations/${encodeURIComponent(selectedSlug.value)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  profileName: selectedProfile.value.name || "",
+                  messages: messages.value,
+                  autopilotReport: autopilotReport.value
+                })
+              });
+            } catch (e) {
+              console.error("Persist conversation error:", e);
+            }
+          }
+          function setActiveUser(userId) {
+            chatUserId.value = userId;
+            loginInput.value = userId;
+            if (userId) {
+              localStorage.setItem(ACTIVE_CHAT_USER_KEY, userId);
+              loginStatus.value = `当前编号：${userId}`;
+            } else {
+              localStorage.removeItem(ACTIVE_CHAT_USER_KEY);
+              loginStatus.value = "未登录编号用户";
+            }
+          }
+          async function allocateChatUser() {
+            if (loginLoading.value) return;
+            loginLoading.value = true;
+            loginStatus.value = "正在分配新编号...";
+            try {
+              const res = await fetch("/api/chat-users/allocate", { method: "POST" });
+              const data = await res.json();
+              if (!res.ok || !data.ok || !data.data?.userId) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              setActiveUser(data.data.userId);
+              conversationStatus.value = "已分配新编号，正在载入对应会话。";
+              await loadConversation();
+            } catch (e) {
+              console.error("Allocate chat user error:", e);
+              loginStatus.value = `分配失败：${e.message || "network_error"}`;
+            } finally {
+              loginLoading.value = false;
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            }
+          }
+          async function loginChatUser() {
+            if (loginLoading.value) return;
+            const userId = loginInput.value.trim();
+            if (!/^\d{10}$/.test(userId)) {
+              loginStatus.value = "请输入 10 位编号。";
+              return;
+            }
+            loginLoading.value = true;
+            loginStatus.value = "正在登录编号用户...";
+            try {
+              const res = await fetch("/api/chat-users/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ userId })
+              });
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              setActiveUser(userId);
+              conversationStatus.value = "编号登录成功，正在载入对应会话。";
+              await loadConversation();
+            } catch (e) {
+              console.error("Chat user login error:", e);
+              loginStatus.value = `登录失败：${e.message || "network_error"}`;
+            } finally {
+              loginLoading.value = false;
+            }
+          }
+          function logoutChatUser() {
+            if (autopilotRunning.value) return;
+            setActiveUser("");
+            clearConversationState();
+            conversationStatus.value = "已退出编号用户。";
+          }
+          async function restoreActiveUser() {
+            const stored = localStorage.getItem(ACTIVE_CHAT_USER_KEY);
+            if (!stored || !/^\d{10}$/.test(stored)) return;
+            loginInput.value = stored;
+            try {
+              const res = await fetch("/api/chat-users/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ userId: stored })
+              });
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                localStorage.removeItem(ACTIVE_CHAT_USER_KEY);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+                return;
+              }
+              setActiveUser(stored);
+              await loadConversation();
+            } catch (e) {
+              console.error("Restore active user error:", e);
+            }
+          }
+          async function selectProfile(slug) {
+            if (autopilotRunning.value || selectedSlug.value === slug) return;
+            selectedSlug.value = slug;
+            updateUrlSlug(slug);
+            await loadConversation();
+          }
+          function dismissSuggestion(id) {
+            pendingSuggestions.value = pendingSuggestions.value.filter((item) => item.id !== id);
+          }
+          function applySuggestion(item) {
+            inputText.value = item.assistantPrompt || "";
+            dismissSuggestion(item.id);
+            spectatorStatus.value = "已将建议填入输入框。";
+            focusInput();
+          }
+          async function sendSuggestionNow(item) {
+            inputText.value = item.assistantPrompt || "";
+            dismissSuggestion(item.id);
+            await sendMessage();
+          }
+          async function consumeNdjsonResponse(res, onDelta) {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                const data = JSON.parse(line);
+                if (!data.ok) {
+                  throw new Error(data.message || data.error || "unknown_error");
+                }
+                if (data.delta) onDelta(data.delta);
+              }
+            }
+            if (buffer.trim()) {
+              const data = JSON.parse(buffer);
+              if (!data.ok) throw new Error(data.message || data.error || "unknown_error");
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+              if (data.delta) onDelta(data.delta);
+            }
+          }
+          async function sendMessage() {
+            if (!canInteract.value || !inputText.value.trim() || isTyping.value) return;
+            const userText = inputText.value.trim();
+            inputText.value = "";
+            messages.value.push({ id: newId("msg"), role: "user", content: userText });
+            scrollToBottom();
+            pendingSuggestions.value = [];
+            spectatorStatus.value = "等待模拟同事回复后再判断是否需要介入。";
+            conversationStatus.value = "正在生成回复...";
+            const assistantMessage = { id: newId("msg"), role: "assistant", content: "", label: selectedProfile.value ? selectedProfile.value.name : "" };
+            isTyping.value = true;
+            messages.value.push(assistantMessage);
+            scrollToBottom();
+            try {
+              const history = messages.value
+                .filter((m) => m.id !== assistantMessage.id)
+                .map((m) => ({ role: m.role, content: m.content }));
+              const res = await fetch("/api/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ slug: selectedSlug.value, messages: history, chatUserId: chatUserId.value })
+              });
+              if (!res.ok) throw new Error(`http_${res.status}`);
+              await consumeNdjsonResponse(res, (delta) => {
+                assistantMessage.content += delta;
+                scrollToBottom();
+              });
+              await persistConversationState();
+              spectatorStatus.value = "可继续对话，或让 Spectator 帮你推进。";
+              conversationStatus.value = "本轮回复已保存到当前编号。";
+              scheduleSpectatorSuggestion(false);
+            } catch (e) {
+              console.error("Chat error:", e);
+              assistantMessage.content = `抱歉，发生了错误：${e.message || "network error"}`;
+              conversationStatus.value = `发送失败：${e.message || "network_error"}`;
+            } finally {
+              isTyping.value = false;
+            }
+          }
+          async function requestSpectatorSuggestion(manual = false) {
+            if (!canInteract.value || spectatorLoading.value || autopilotRunning.value) return;
+            if (!manual && pendingSuggestions.value.length >= 2) return;
+            spectatorLoading.value = true;
+            spectatorStatus.value = manual ? "Spectator 正在生成建议..." : "Spectator 正在观察当前对话...";
+            try {
+              const res = await fetch("/api/chat/spectator", {
+                method: "POST",
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  slug: selectedSlug.value,
+                  messages: messages.value.map((item) => ({ role: item.role, content: item.content })),
+                  draftMessage: inputText.value,
+                  pendingSuggestions: pendingSuggestions.value,
+                  manual
+                })
+              });
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              const suggestion = data.data || {};
+              if (!suggestion.shouldIntervene || !suggestion.assistantPrompt) {
+                spectatorStatus.value = suggestion.reasoning || "本轮暂不需要介入。";
+                return;
+              }
+              const duplicated = pendingSuggestions.value.some((item) => item.assistantPrompt === suggestion.assistantPrompt);
+              if (!duplicated) {
+                pendingSuggestions.value.unshift({
+                  id: newId("sug"),
+                  topic: suggestion.topic || "建议",
+                  userAsk: suggestion.userAsk || "建议进一步优化当前问题",
+                  assistantPrompt: suggestion.assistantPrompt,
+                  suggestionType: suggestion.suggestionType || "improvement",
+                  reasoning: suggestion.reasoning || ""
+                });
+                pendingSuggestions.value = pendingSuggestions.value.slice(0, 3);
+                spectatorStatus.value = "Spectator 发现了一个值得介入的点。";
+              }
+            } catch (e) {
+              console.error("Spectator suggestion error:", e);
+              spectatorStatus.value = `建议生成失败：${e.message || "network_error"}`;
+            } finally {
+              spectatorLoading.value = false;
+            }
+          }
+          function scheduleSpectatorSuggestion(manual = false) {
+            resetSuggestionTimer();
+            if (!canInteract.value || autopilotRunning.value) return;
+            if (manual) {
+              requestSpectatorSuggestion(true);
+              return;
+            }
+            suggestionTimer = setTimeout(() => {
+              requestSpectatorSuggestion(false);
+            }, 1200);
+          }
+          function parseSpectatorProtocol(raw) {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            const match = raw.match(/^SHOULD_END=(true|false)\s*\nCONTENT:\s*\n?/i);
+            if (!match) return { shouldEnd: false, content: raw };
+            return { shouldEnd: match[1].toLowerCase() === "true", content: raw.slice(match[0].length) };
+          }
+          async function consumeTextStream(res, onChunk) {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let raw = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              raw += decoder.decode(value, { stream: true });
+              onChunk(raw);
+            }
+            return raw;
+          }
+          async function runAutopilotStep(nextSpeaker, stepIndex, token) {
+            const chatMirrorMessage = {
+              id: newId("msg"),
+              role: nextSpeaker === "spectator" ? "spectator" : "assistant",
+              content: "",
+              label: nextSpeaker === "spectator" ? "Spectator · 自动讨论" : `${selectedProfile.value ? selectedProfile.value.name : "模拟同事"} · 自动讨论`
+            };
+            messages.value.push(chatMirrorMessage);
+            scrollToBottom();
+            const item = { id: newId("auto"), speaker: nextSpeaker, content: "", streaming: true, chatMirrorId: chatMirrorMessage.id };
+            autopilotTranscript.value.push(item);
+            const res = await fetch("/api/chat/autopilot/step", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                slug: selectedSlug.value,
+                messages: messages.value.map((m) => ({ role: m.role, content: m.content })),
+                transcript: autopilotTranscript.value
+                  .filter((entry) => entry.id !== item.id)
+                  .map((entry) => ({ speaker: entry.speaker, content: entry.content })),
+                nextSpeaker,
+                endRequested: autopilotStopRequested.value,
+                mode: autopilotMode.value,
+                stepIndex
+              })
+            });
+            if (!res.ok) {
+              const text = await res.text();
+              throw new Error(text || `http_${res.status}`);
+            }
+            let shouldEnd = false;
+            if (nextSpeaker === "spectator") {
+              const raw = await consumeTextStream(res, (buffer) => {
+                const parsed = parseSpectatorProtocol(buffer);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+                item.content = parsed.content;
+                chatMirrorMessage.content = parsed.content;
+                scrollToBottom();
+              });
+              const parsed = parseSpectatorProtocol(raw);
+              item.content = parsed.content;
+              chatMirrorMessage.content = parsed.content;
+              shouldEnd = parsed.shouldEnd;
+            } else {
+              const raw = await consumeTextStream(res, (buffer) => {
+                item.content = buffer;
+                chatMirrorMessage.content = buffer;
+                scrollToBottom();
+              });
+              item.content = raw;
+              chatMirrorMessage.content = raw;
+            }
+            item.streaming = false;
+            await persistConversationState();
+            if (token !== autopilotToken) throw new Error("autopilot_cancelled");
+            return { shouldEnd };
+          }
+          async function generateAutopilotReport(token) {
+            autopilotStatus.value = "正在生成自动讨论总结...";
+            autopilotReport.value = "";
+            const reportMessage = {
+              id: newId("msg"),
+              role: "spectator",
+              content: "",
+              label: "Spectator · 讨论总结"
+            };
+            messages.value.push(reportMessage);
+            scrollToBottom();
+            const res = await fetch("/api/chat/autopilot/report", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                slug: selectedSlug.value,
+                messages: messages.value.map((m) => ({ role: m.role, content: m.content })),
+                transcript: autopilotTranscript.value.map((entry) => ({ speaker: entry.speaker, content: entry.content })),
+                mode: autopilotMode.value
+              })
+            });
+            if (!res.ok) {
+              const text = await res.text();
+              throw new Error(text || `http_${res.status}`);
+            }
+            await consumeTextStream(res, (buffer) => {
+              autopilotReport.value = buffer;
+              reportMessage.content = buffer;
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+              scrollToBottom();
+            });
+            await persistConversationState();
+            if (token === autopilotToken) autopilotStatus.value = "自动讨论已完成。";
+          }
+          async function startAutopilot(mode) {
+            if (!canInteract.value || autopilotRunning.value) return;
+            autopilotToken += 1;
+            const token = autopilotToken;
+            autopilotRunning.value = true;
+            autopilotMode.value = mode;
+            autopilotTranscript.value = [];
+            autopilotReport.value = "";
+            autopilotRound.value = 0;
+            autopilotStopRequested.value = false;
+            spectatorStatus.value = "自动讨论已启动，暂时暂停旁观建议。";
+            conversationStatus.value = "自动讨论进行中...";
+            let nextSpeaker = "main";
+            try {
+              for (let step = 1; step <= 6; step += 1) {
+                if (token !== autopilotToken) break;
+                autopilotRound.value = step;
+                autopilotStatus.value = `${nextSpeaker === "main" ? selectedProfile.value.name : "Spectator"} 正在第 ${step} 轮发言...`;
+                const result = await runAutopilotStep(nextSpeaker, step, token);
+                if (token !== autopilotToken) break;
+                if (nextSpeaker === "spectator" && (result.shouldEnd || autopilotStopRequested.value || step === 6)) {
+                  await generateAutopilotReport(token);
+                  break;
+                }
+                nextSpeaker = nextSpeaker === "main" ? "spectator" : "main";
+              }
+            } catch (e) {
+              if (e.message !== "autopilot_cancelled") {
+                console.error("Autopilot error:", e);
+                autopilotStatus.value = `自动讨论失败：${e.message || "unknown_error"}`;
+                conversationStatus.value = `自动讨论失败：${e.message || "unknown_error"}`;
+              }
+            } finally {
+              if (token === autopilotToken) {
+                autopilotRunning.value = false;
+                autopilotStopRequested.value = false;
+                if (!autopilotReport.value && autopilotTranscript.value.length > 0 && !autopilotStatus.value.includes("失败")) {
+                  autopilotStatus.value = "自动讨论已结束。";
+                }
+                spectatorStatus.value = "自动讨论结束，Spectator 已恢复旁观。";
+                if (!conversationStatus.value.includes("失败")) {
+                  conversationStatus.value = "自动讨论结果已保存到当前编号。";
+                }
+              }
+            }
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+          }
+          function requestAutopilotStop() {
+            if (!autopilotRunning.value) return;
+            autopilotStopRequested.value = true;
+            autopilotStatus.value = "将在当前轮结束后收束并生成总结...";
+          }
+          function onKeyDown(e) {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage();
+            }
+          }
+          watch(inputText, (value) => {
+            if (!canInteract.value || isTyping.value || autopilotRunning.value) return;
+            if (!value.trim()) return;
+            scheduleSpectatorSuggestion(false);
+          });
+          (async () => {
+            await loadProfiles();
+            await restoreActiveUser();
+          })();
+          return {
+            profiles,
+            selectedSlug,
+            selectedProfile,
+            messages,
+            inputText,
+            isTyping,
+            messagesRef,
+            inputRef,
+            pendingSuggestions,
+            spectatorLoading,
+            spectatorStatus,
+            autopilotRunning,
+            autopilotReport,
+            autopilotStatus,
+            autopilotRound,
+            chatUserId,
+            loginInput,
+            loginLoading,
+            loginStatus,
+            conversationStatus,
+            loadingConversation,
+            canInteract,
+            renderMarkdown,
+            messageClass,
+            messageAvatar,
+            selectProfile,
+            allocateChatUser,
+            loginChatUser,
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            logoutChatUser,
+            sendMessage,
+            onKeyDown,
+            requestSpectatorSuggestion,
+            dismissSuggestion,
+            applySuggestion,
+            sendSuggestionNow,
+            startAutopilot,
+            requestAutopilotStop
+          };
+        }
+      }).mount("#app");
+    </script>
+  </body>
+</html>
+// ===== FILE END =====
+// ===== FILE BEGIN: web-static\chat-admin.html =====
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>编号后台 - 会议旁听 Agent</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="/lib/marked.min.js"></script>
+    <script src="/lib/purify.min.js"></script>
+    <style>
+      html,body { height:100%; overflow:hidden; }
+      body { background:#F2F3F5; }
+      #app.container { width:100vw; max-width:none; height:100vh; margin:0; padding:12px; display:flex; flex-direction:column; overflow:hidden; }
+      .header { flex:0 0 auto; margin-bottom:12px; }
+      .header-actions { display:flex; gap:10px; align-items:center; }
+      .admin-layout { flex:1; min-height:0; display:grid; grid-template-columns:320px minmax(0, 380px) minmax(0, 1fr); gap:14px; }
+      .panel { background:var(--card-bg); border:1px solid var(--border-color); border-radius:12px; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+      .panel-header { padding:12px 14px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; gap:8px; }
+      .panel-body { flex:1; min-height:0; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
+      .user-card,.conversation-card,.message-card { background:var(--bg-gray); border:1px solid var(--border-color); border-radius:10px; padding:10px; }
+      .profile-card { background:#F8FAFC; border:1px solid var(--border-color); border-radius:10px; padding:12px; }
+      .user-card.active,.conversation-card.active { border-color:var(--primary-color); box-shadow:0 0 0 1px var(--primary-color); background:#E8F0FE; }
+      .user-card,.conversation-card { cursor:pointer; }
+      .card-title { font-size:14px; font-weight:600; }
+      .card-meta,.hint-text { font-size:12px; color:var(--text-secondary); }
+      .profile-meta-muted { margin-top:8px; font-size:11px; color:rgba(60, 60, 67, 0.5); }
+      .profile-summary { font-size:13px; line-height:1.65; color:var(--text-color); }
+      .tag-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+      .profile-tag { display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; background:#EEF2FF; color:#4C51BF; font-size:12px; }
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+      .profile-section-title { font-size:12px; font-weight:600; color:var(--text-secondary); margin-top:10px; }
+      .message-card.user { background:#E8F0FE; border-color:#B6D4FE; }
+      .message-card.spectator { background:#F4EEFF; border-color:#D9C9FF; }
+      .message-label { font-size:12px; color:var(--text-secondary); margin-bottom:6px; }
+      .message-content.md { background:transparent; border:none; padding:0; overflow:visible; max-height:none; }
+      .empty-state { flex:1; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--text-placeholder); }
+      .status-text { font-size:12px; color:var(--text-secondary); }
+      .btn.secondary,.btn { padding:7px 12px; }
+      @media (max-width:1280px) {
+        .admin-layout { grid-template-columns:1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="container">
+      <div class="header">
+        <div>
+          <div class="title">编号后台</div>
+          <div class="subtle">查看有哪些编号用户，以及每个编号下的同事画像对话记录</div>
+        </div>
+        <div class="header-actions">
+          <button class="btn secondary" @click="loadUsers" :disabled="loadingUsers">{{ loadingUsers ? "刷新中..." : "刷新" }}</button>
+          <a href="/chat.html" class="btn secondary">进入对话</a>
+          <a href="/" class="btn secondary">返回首页</a>
+        </div>
+      </div>
+      <div class="admin-layout">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">编号用户</div>
+            <div class="status-text">{{ users.length }} 个</div>
+          </div>
+          <div class="panel-body">
+            <div v-if="users.length === 0" class="empty-state">暂无编号用户</div>
+            <div v-for="user in users" :key="user.userId" :class="['user-card', { active: selectedUserId === user.userId }]" @click="selectUser(user.userId)">
+              <div class="card-title">{{ user.userId }}</div>
+              <div class="card-meta" style="margin-top:4px;">会话 {{ user.conversationCount }} 个</div>
+              <div class="card-meta">最近更新 {{ formatTime(user.updatedAt) }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">画像会话</div>
+            <div class="status-text">{{ selectedUserDetail ? selectedUserDetail.conversationCount : 0 }} 个</div>
+          </div>
+          <div class="panel-body">
+            <div v-if="!selectedUser" class="empty-state">先选择一个编号用户</div>
+            <div v-else-if="loadingUserDetail" class="empty-state">正在读取该编号的文件记录...</div>
+            <div v-else-if="!selectedUserDetail || selectedUserDetail.conversations.length === 0" class="empty-state">该编号下还没有画像对话记录</div>
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            <template v-else>
+              <div class="profile-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                  <div class="card-title">用户画像</div>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="btn secondary" @click="toggleUserProfileExpanded" :disabled="loadingUserProfile || !selectedUserProfile">{{ userProfileExpanded ? "收起" : "展开" }}</button>
+                    <button class="btn secondary" @click="refreshUserProfile" :disabled="loadingUserProfile">{{ loadingUserProfile ? "分析中..." : "刷新画像" }}</button>
+                  </div>
+                </div>
+                <div v-if="loadingUserProfile" class="card-meta" style="margin-top:10px;">正在分析用户画像...</div>
+                <template v-else-if="selectedUserProfile">
+                  <div class="profile-meta-muted">用户消息 {{ selectedUserProfile.stats?.totalUserMessages || 0 }} 条 · 会话 {{ selectedUserProfile.stats?.conversationCount || 0 }} 个 · 更新时间 {{ formatTime(selectedUserProfile.updatedAt) }}</div>
+                  <template v-if="userProfileExpanded">
+                    <div class="profile-summary" style="margin-top:8px;">{{ selectedUserProfile.profile?.summary || '暂无画像总结' }}</div>
+                    <div class="profile-section-title">沟通风格</div>
+                    <div class="tag-list">
+                      <span v-for="item in (selectedUserProfile.profile?.communicationStyle || [])" :key="`c-${item}`" class="profile-tag">{{ item }}</span>
+                      <span v-if="!(selectedUserProfile.profile?.communicationStyle || []).length" class="card-meta">暂无</span>
+                    </div>
+                    <div class="profile-section-title">技术关注</div>
+                    <div class="tag-list">
+                      <span v-for="item in (selectedUserProfile.profile?.technicalFocus || [])" :key="`t-${item}`" class="profile-tag">{{ item }}</span>
+                      <span v-if="!(selectedUserProfile.profile?.technicalFocus || []).length" class="card-meta">暂无</span>
+                    </div>
+                    <div class="profile-section-title">协作方式</div>
+                    <div class="tag-list">
+                      <span v-for="item in (selectedUserProfile.profile?.collaborationStyle || [])" :key="`co-${item}`" class="profile-tag">{{ item }}</span>
+                      <span v-if="!(selectedUserProfile.profile?.collaborationStyle || []).length" class="card-meta">暂无</span>
+                    </div>
+                    <div class="profile-section-title">决策模式</div>
+                    <div class="tag-list">
+                      <span v-for="item in (selectedUserProfile.profile?.decisionPattern || [])" :key="`d-${item}`" class="profile-tag">{{ item }}</span>
+                      <span v-if="!(selectedUserProfile.profile?.decisionPattern || []).length" class="card-meta">暂无</span>
+                    </div>
+                    <div class="profile-section-title">常见担忧</div>
+                    <div class="tag-list">
+                      <span v-for="item in (selectedUserProfile.profile?.concerns || [])" :key="`r-${item}`" class="profile-tag">{{ item }}</span>
+                      <span v-if="!(selectedUserProfile.profile?.concerns || []).length" class="card-meta">暂无</span>
+                    </div>
+                    <div class="profile-section-title">目标偏好</div>
+                    <div class="tag-list">
+                      <span v-for="item in (selectedUserProfile.profile?.goals || [])" :key="`g-${item}`" class="profile-tag">{{ item }}</span>
+                      <span v-if="!(selectedUserProfile.profile?.goals || []).length" class="card-meta">暂无</span>
+                    </div>
+                  </template>
+                </template>
+                <div v-else class="card-meta" style="margin-top:10px;">暂无用户画像。</div>
+              </div>
+              <div v-for="conversation in selectedUserDetail.conversations" :key="conversation.slug" :class="['conversation-card', { active: selectedConversationSlug === conversation.slug }]" @click="selectConversation(conversation.slug)">
+                <div class="card-title">{{ conversation.profileName || conversation.slug }}</div>
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+                <div class="card-meta" style="margin-top:4px;">标识 {{ conversation.slug }}</div>
+                <div class="card-meta">消息 {{ conversation.messages ? conversation.messages.length : (conversation.messageCount || 0) }} 条</div>
+                <div class="card-meta">最近更新 {{ formatTime(conversation.updatedAt) }}</div>
+                <div class="card-meta" v-if="conversation.lastMessagePreview || lastMessagePreview(conversation)">{{ conversation.lastMessagePreview || lastMessagePreview(conversation) }}</div>
+              </div>
+            </template>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">对话记录</div>
+            <div class="status-text">{{ selectedConversation ? `${selectedConversation.messages?.length || 0} 条消息` : '未选择会话' }}</div>
+          </div>
+          <div class="panel-body">
+            <div v-if="loadingUserDetail" class="empty-state">正在读取会话文件...</div>
+            <div v-else-if="!selectedConversation" class="empty-state">选择左侧会话查看完整记录</div>
+            <template v-else>
+              <div class="conversation-card">
+                <div class="card-title">{{ selectedConversation.profileName || selectedConversation.slug }}</div>
+                <div class="card-meta" style="margin-top:4px;">编号 {{ selectedUserId }}</div>
+                <div class="card-meta">创建 {{ formatTime(selectedConversation.createdAt) }} · 更新 {{ formatTime(selectedConversation.updatedAt) }}</div>
+              </div>
+              <div v-for="msg in selectedConversation.messages" :key="msg.id || `${msg.role}-${msg.content.slice(0, 16)}`" :class="['message-card', msg.role === 'user' ? 'user' : (msg.role === 'spectator' ? 'spectator' : 'assistant')]">
+                <div v-if="msg.label && msg.role !== 'user'" class="message-label">{{ msg.label }}</div>
+                <div class="card-meta" style="margin-bottom:6px;">{{ roleText(msg.role) }}</div>
+                <div v-if="msg.role === 'user'">{{ msg.content }}</div>
+                <div v-else class="message-content md" v-html="renderMarkdown(msg.content)"></div>
+              </div>
+              <div v-if="selectedConversation.autopilotReport" class="conversation-card">
+                <div class="card-title">自动讨论总结</div>
+                <div class="message-content md" style="margin-top:8px;" v-html="renderMarkdown(selectedConversation.autopilotReport)"></div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const { createApp, ref, computed } = Vue;
+      createApp({
+        setup() {
+          const users = ref([]);
+          const selectedUserId = ref("");
+          const selectedConversationSlug = ref("");
+          const loadingUsers = ref(false);
+          const loadingUserDetail = ref(false);
+          const selectedUserDetail = ref(null);
+          const loadingUserProfile = ref(false);
+          const selectedUserProfile = ref(null);
+          const userProfileExpanded = ref(false);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+          const selectedUser = computed(() => users.value.find((item) => item.userId === selectedUserId.value) || null);
+          const selectedConversation = computed(() => {
+            if (!selectedUserDetail.value) return null;
+            return selectedUserDetail.value.conversations.find((item) => item.slug === selectedConversationSlug.value) || null;
+          });
+          function renderMarkdown(text) {
+            if (!text) return "";
+            return DOMPurify.sanitize(marked.parse(text));
+          }
+          function formatTime(value) {
+            if (!value) return "-";
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return value;
+            return date.toLocaleString("zh-CN", { hour12: false });
+          }
+          function roleText(role) {
+            if (role === "user") return "用户";
+            if (role === "spectator") return "Spectator";
+            return "模拟同事";
+          }
+          function lastMessagePreview(conversation) {
+            const lastMessage = Array.isArray(conversation?.messages) ? conversation.messages[conversation.messages.length - 1] : null;
+            return lastMessage?.content ? lastMessage.content.slice(0, 120) : "";
+          }
+          async function loadUsers() {
+            loadingUsers.value = true;
+            try {
+              const res = await fetch("/api/chat-admin/users");
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              users.value = Array.isArray(data.data) ? data.data : [];
+              if (!selectedUserId.value && users.value.length > 0) {
+                selectedUserId.value = users.value[0].userId;
+              }
+              if (selectedUserId.value) {
+                await loadUserDetail(selectedUserId.value);
+                await loadUserProfile(selectedUserId.value, false);
+              }
+            } catch (e) {
+              console.error("Load admin users error:", e);
+            } finally {
+              loadingUsers.value = false;
+            }
+          }
+          async function loadUserDetail(userId) {
+            if (!userId) {
+              selectedUserDetail.value = null;
+              selectedConversationSlug.value = "";
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+              return;
+            }
+            loadingUserDetail.value = true;
+            try {
+              const res = await fetch(`/api/chat-admin/users/${encodeURIComponent(userId)}`);
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              selectedUserDetail.value = data.data || null;
+              if (selectedUserDetail.value?.conversations?.length > 0) {
+                const exists = selectedUserDetail.value.conversations.some((item) => item.slug === selectedConversationSlug.value);
+                selectedConversationSlug.value = exists ? selectedConversationSlug.value : selectedUserDetail.value.conversations[0].slug;
+              } else {
+                selectedConversationSlug.value = "";
+              }
+            } catch (e) {
+              console.error("Load admin user detail error:", e);
+              selectedUserDetail.value = null;
+              selectedConversationSlug.value = "";
+            } finally {
+              loadingUserDetail.value = false;
+            }
+          }
+          async function loadUserProfile(userId, force = false) {
+            if (!userId) {
+              selectedUserProfile.value = null;
+              userProfileExpanded.value = false;
+              return;
+            }
+            loadingUserProfile.value = true;
+            try {
+              const suffix = force ? "?force=true" : "";
+              const res = await fetch(`/api/chat-admin/users/${encodeURIComponent(userId)}/profile${suffix}`);
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              selectedUserProfile.value = data.data || null;
+              userProfileExpanded.value = false;
+            } catch (e) {
+              console.error("Load admin user profile error:", e);
+              selectedUserProfile.value = null;
+              userProfileExpanded.value = false;
+            } finally {
+              loadingUserProfile.value = false;
+            }
+          }
+          async function selectUser(userId) {
+            selectedUserId.value = userId;
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+            await loadUserDetail(userId);
+            await loadUserProfile(userId, false);
+          }
+          async function refreshUserProfile() {
+            if (!selectedUserId.value) return;
+            await loadUserProfile(selectedUserId.value, true);
+          }
+          function toggleUserProfileExpanded() {
+            if (!selectedUserProfile.value) return;
+            userProfileExpanded.value = !userProfileExpanded.value;
+          }
+          function selectConversation(slug) {
+            selectedConversationSlug.value = slug;
+          }
+          loadUsers();
+          return {
+            users,
+            selectedUserId,
+            selectedConversationSlug,
+            selectedUser,
+            selectedConversation,
+            loadingUsers,
+            loadingUserDetail,
+            selectedUserDetail,
+            loadingUserProfile,
+            selectedUserProfile,
+            userProfileExpanded,
+            renderMarkdown,
+            formatTime,
+            roleText,
+            lastMessagePreview,
+            loadUsers,
+            loadUserDetail,
+            loadUserProfile,
+            selectUser,
+            selectConversation,
+            refreshUserProfile,
+            toggleUserProfileExpanded
+          };
+        }
+      }).mount("#app");
+    </script>
+  </body>
+</html>
+// ===== FILE END =====
+// ===== FILE BEGIN: web-static\index.html =====
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>会议旁听 Agent</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="/lib/marked.min.js"></script>
+    <script src="/lib/purify.min.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="/app.js?v=8"></script>
+  </body>
+</html>
+// ===== FILE END =====
+// ===== FILE BEGIN: web-static\lib\marked.min.js =====
+/**
+ * marked v12.0.0 - a markdown parser
+ * Copyright (c) 2011-2024, Christopher Jeffrey. (MIT Licensed)
+ * https://github.com/markedjs/marked
+ */
+!function(e,t){"object"==typeof exports&&"undefined"!=typeof module?t(exports):"function"==typeof define&&define.amd?define(["exports"],t):t((e="undefined"!=typeof globalThis?globalThis:e||self).marked={})}(this,(function(e){"use strict";function t(){return{async:!1,breaks:!1,extensions:null,gfm:!0,hooks:null,pedantic:!1,renderer:null,silent:!1,tokenizer:null,walkTokens:null}}function n(t){e.defaults=t}e.defaults={async:!1,breaks:!1,extensions:null,gfm:!0,hooks:null,pedantic:!1,renderer:null,silent:!1,tokenizer:null,walkTokens:null};const s=/[&<>"']/,r=new RegExp(s.source,"g"),i=/[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/,l=new RegExp(i.source,"g"),o={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"},a=e=>o[e];function c(e,t){if(t){if(s.test(e))return e.replace(r,a)}else if(i.test(e))return e.replace(l,a);return e}const h=/&(#(?:\d+)|(?:#x[0-9A-Fa-f]+)|(?:\w+));?/gi;function p(e){return e.replace(h,((e,t)=>"colon"===(t=t.toLowerCase())?":":"#"===t.charAt(0)?"x"===t.charAt(1)?String.fromCharCode(parseInt(t.substring(2),16)):String.fromCharCode(+t.substring(1)):""))}const u=/(^|[^\[])\^/g;function k(e,t){let n="string"==typeof e?e:e.source;t=t||"";const s={replace:(e,t)=>{let r="string"==typeof t?t:t.source;return r=r.replace(u,"$1"),n=n.replace(e,r),s},getRegex:()=>new RegExp(n,t)};return s}function g(e){try{e=encodeURI(e).replace(/%25/g,"%")}catch(e){return null}return e}const f={exec:()=>null};function d(e,t){const n=e.replace(/\|/g,((e,t,n)=>{let s=!1,r=t;for(;--r>=0&&"\\"===n[r];)s=!s;return s?"|":" |"})).split(/ \|/);let s=0;if(n[0].trim()||n.shift(),n.length>0&&!n[n.length-1].trim()&&n.pop(),t)if(n.length>t)n.splice(t);else for(;n.length<t;)n.push("");for(;s<n.length;s++)n[s]=n[s].trim().replace(/\\\|/g,"|");return n}function x(e,t,n){const s=e.length;if(0===s)return"";let r=0;for(;r<s;){const i=e.charAt(s-r-1);if(i!==t||n){if(i===t||!n)break;r++}else r++}return e.slice(0,s-r)}function b(e,t,n,s){const r=t.href,i=t.title?c(t.title):null,l=e[1].replace(/\\([\[\]])/g,"$1");if("!"!==e[0].charAt(0)){s.state.inLink=!0;const e={type:"link",raw:n,href:r,title:i,text:l,tokens:s.inlineTokens(l)};return s.state.inLink=!1,e}return{type:"image",raw:n,href:r,title:i,text:c(l)}}class w{options;rules;lexer;constructor(t){this.options=t||e.defaults}space(e){const t=this.rules.block.newline.exec(e);if(t&&t[0].length>0)return{type:"space",raw:t[0]}}code(e){const t=this.rules.block.code.exec(e);if(t){const e=t[0].replace(/^ {1,4}/gm,"");return{type:"code",raw:t[0],codeBlockStyle:"indented",text:this.options.pedantic?e:x(e,"\n")}}}fences(e){const t=this.rules.block.fences.exec(e);if(t){const e=t[0],n=function(e,t){const n=e.match(/^(\s+)(?:```)/);if(null===n)return t;const s=n[1];return t.split("\n").map((e=>{const t=e.match(/^\s+/);if(null===t)return e;const[n]=t;return n.length>=s.length?e.slice(s.length):e})).join("\n")}(e,t[3]||"");return{type:"code",raw:e,lang:t[2]?t[2].trim().replace(this.rules.inline.anyPunctuation,"$1"):t[2],text:n}}}heading(e){const t=this.rules.block.heading.exec(e);if(t){let e=t[2].trim();if(/#$/.test(e)){const t=x(e,"#");this.options.pedantic?e=t.trim():t&&!/ $/.test(t)||(e=t.trim())}return{type:"heading",raw:t[0],depth:t[1].length,text:e,tokens:this.lexer.inline(e)}}}hr(e){const t=this.rules.block.hr.exec(e);if(t)return{type:"hr",raw:t[0]}}blockquote(e){const t=this.rules.block.blockquote.exec(e);if(t){const e=x(t[0].replace(/^ *>[ \t]?/gm,""),"\n"),n=this.lexer.state.top;this.lexer.state.top=!0;const s=this.lexer.blockTokens(e);return this.lexer.state.top=n,{type:"blockquote",raw:t[0],tokens:s,text:e}}}list(e){let t=this.rules.block.list.exec(e);if(t){let n=t[1].trim();const s=n.length>1,r={type:"list",raw:"",ordered:s,start:s?+n.slice(0,-1):"",loose:!1,items:[]};n=s?`\\d{1,9}\\${n.slice(-1)}`:`\\${n}`,this.options.pedantic&&(n=s?n:"[*+-]");const i=new RegExp(`^( {0,3}${n})((?:[\t ][^\\n]*)?(?:\\n|$))`);let l="",o="",a=!1;for(;e;){let n=!1;if(!(t=i.exec(e)))break;if(this.rules.block.hr.test(e))break;l=t[0],e=e.substring(l.length);let s=t[2].split("\n",1)[0].replace(/^\t+/,(e=>" ".repeat(3*e.length))),c=e.split("\n",1)[0],h=0;this.options.pedantic?(h=2,o=s.trimStart()):(h=t[2].search(/[^ ]/),h=h>4?1:h,o=s.slice(h),h+=t[1].length);let p=!1;if(!s&&/^ *$/.test(c)&&(l+=c+"\n",e=e.substring(c.length+1),n=!0),!n){const t=new RegExp(`^ {0,${Math.min(3,h-1)}}(?:[*+-]|\\d{1,9}[.)])((?:[ \t][^\\n]*)?(?:\\n|$))`),n=new RegExp(`^ {0,${Math.min(3,h-1)}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`),r=new RegExp(`^ {0,${Math.min(3,h-1)}}(?:\`\`\`|~~~)`),i=new RegExp(`^ {0,${Math.min(3,h-1)}}#`);for(;e;){const a=e.split("\n",1)[0];if(c=a,this.options.pedantic&&(c=c.replace(/^ {1,4}(?=( {4})*[^ ])/g,"  ")),r.test(c))break;if(i.test(c))break;if(t.test(c))break;if(n.test(e))break;if(c.search(/[^ ]/)>=h||!c.trim())o+="\n"+c.slice(h);else{if(p)break;if(s.search(/[^ ]/)>=4)break;if(r.test(s))break;if(i.test(s))break;if(n.test(s))break;o+="\n"+c}p||c.trim()||(p=!0),l+=a+"\n",e=e.substring(a.length+1),s=c.slice(h)}}r.loose||(a?r.loose=!0:/\n *\n *$/.test(l)&&(a=!0));let u,k=null;this.options.gfm&&(k=/^\[[ xX]\] /.exec(o),k&&(u="[ ] "!==k[0],o=o.replace(/^\[[ xX]\] +/,""))),r.items.push({type:"list_item",raw:l,task:!!k,checked:u,loose:!1,text:o,tokens:[]}),r.raw+=l}r.items[r.items.length-1].raw=l.trimEnd(),r.items[r.items.length-1].text=o.trimEnd(),r.raw=r.raw.trimEnd();for(let e=0;e<r.items.length;e++)if(this.lexer.state.top=!1,r.items[e].tokens=this.lexer.blockTokens(r.items[e].text,[]),!r.loose){const t=r.items[e].tokens.filter((e=>"space"===e.type)),n=t.length>0&&t.some((e=>/\n.*\n/.test(e.raw)));r.loose=n}if(r.loose)for(let e=0;e<r.items.length;e++)r.items[e].loose=!0;return r}}html(e){const t=this.rules.block.html.exec(e);if(t){return{type:"html",block:!0,raw:t[0],pre:"pre"===t[1]||"script"===t[1]||"style"===t[1],text:t[0]}}}def(e){const t=this.rules.block.def.exec(e);if(t){const e=t[1].toLowerCase().replace(/\s+/g," "),n=t[2]?t[2].replace(/^<(.*)>$/,"$1").replace(this.rules.inline.anyPunctuation,"$1"):"",s=t[3]?t[3].substring(1,t[3].length-1).replace(this.rules.inline.anyPunctuation,"$1"):t[3];return{type:"def",tag:e,raw:t[0],href:n,title:s}}}table(e){const t=this.rules.block.table.exec(e);if(!t)return;if(!/[:|]/.test(t[2]))return;const n=d(t[1]),s=t[2].replace(/^\||\| *$/g,"").split("|"),r=t[3]&&t[3].trim()?t[3].replace(/\n[ \t]*$/,"").split("\n"):[],i={type:"table",raw:t[0],header:[],align:[],rows:[]};if(n.length===s.length){for(const e of s)/^ *-+: *$/.test(e)?i.align.push("right"):/^ *:-+: *$/.test(e)?i.align.push("center"):/^ *:-+ *$/.test(e)?i.align.push("left"):i.align.push(null);for(const e of n)i.header.push({text:e,tokens:this.lexer.inline(e)});for(const e of r)i.rows.push(d(e,i.header.length).map((e=>({text:e,tokens:this.lexer.inline(e)}))));return i}}lheading(e){const t=this.rules.block.lheading.exec(e);if(t)return{type:"heading",raw:t[0],depth:"="===t[2].charAt(0)?1:2,text:t[1],tokens:this.lexer.inline(t[1])}}paragraph(e){const t=this.rules.block.paragraph.exec(e);if(t){const e="\n"===t[1].charAt(t[1].length-1)?t[1].slice(0,-1):t[1];return{type:"paragraph",raw:t[0],text:e,tokens:this.lexer.inline(e)}}}text(e){const t=this.rules.block.text.exec(e);if(t)return{type:"text",raw:t[0],text:t[0],tokens:this.lexer.inline(t[0])}}escape(e){const t=this.rules.inline.escape.exec(e);if(t)return{type:"escape",raw:t[0],text:c(t[1])}}tag(e){const t=this.rules.inline.tag.exec(e);if(t)return!this.lexer.state.inLink&&/^<a /i.test(t[0])?this.lexer.state.inLink=!0:this.lexer.state.inLink&&/^<\/a>/i.test(t[0])&&(this.lexer.state.inLink=!1),!this.lexer.state.inRawBlock&&/^<(pre|code|kbd|script)(\s|>)/i.test(t[0])?this.lexer.state.inRawBlock=!0:this.lexer.state.inRawBlock&&/^<\/(pre|code|kbd|script)(\s|>)/i.test(t[0])&&(this.lexer.state.inRawBlock=!1),{type:"html",raw:t[0],inLink:this.lexer.state.inLink,inRawBlock:this.lexer.state.inRawBlock,block:!1,text:t[0]}}link(e){const t=this.rules.inline.link.exec(e);if(t){const e=t[2].trim();if(!this.options.pedantic&&/^</.test(e)){if(!/>$/.test(e))return;const t=x(e.slice(0,-1),"\\");if((e.length-t.length)%2==0)return}else{const e=function(e,t){if(-1===e.indexOf(t[1]))return-1;let n=0;for(let s=0;s<e.length;s++)if("\\"===e[s])s++;else if(e[s]===t[0])n++;else if(e[s]===t[1]&&(n--,n<0))return s;return-1}(t[2],"()");if(e>-1){const n=(0===t[0].indexOf("!")?5:4)+t[1].length+e;t[2]=t[2].substring(0,e),t[0]=t[0].substring(0,n).trim(),t[3]=""}}let n=t[2],s="";if(this.options.pedantic){const e=/^([^'"]*[^\s])\s+(['"])(.*)\2/.exec(n);e&&(n=e[1],s=e[3])}else s=t[3]?t[3].slice(1,-1):"";return n=n.trim(),/^</.test(n)&&(n=this.options.pedantic&&!/>$/.test(e)?n.slice(1):n.slice(1,-1)),b(t,{href:n?n.replace(this.rules.inline.anyPunctuation,"$1"):n,title:s?s.replace(this.rules.inline.anyPunctuation,"$1"):s},t[0],this.lexer)}}reflink(e,t){let n;if((n=this.rules.inline.reflink.exec(e))||(n=this.rules.inline.nolink.exec(e))){const e=t[(n[2]||n[1]).replace(/\s+/g," ").toLowerCase()];if(!e){const e=n[0].charAt(0);return{type:"text",raw:e,text:e}}return b(n,e,n[0],this.lexer)}}emStrong(e,t,n=""){let s=this.rules.inline.emStrongLDelim.exec(e);if(!s)return;if(s[3]&&n.match(/[\p{L}\p{N}]/u))return;if(!(s[1]||s[2]||"")||!n||this.rules.inline.punctuation.exec(n)){const n=[...s[0]].length-1;let r,i,l=n,o=0;const a="*"===s[0][0]?this.rules.inline.emStrongRDelimAst:this.rules.inline.emStrongRDelimUnd;for(a.lastIndex=0,t=t.slice(-1*e.length+n);null!=(s=a.exec(t));){if(r=s[1]||s[2]||s[3]||s[4]||s[5]||s[6],!r)continue;if(i=[...r].length,s[3]||s[4]){l+=i;continue}if((s[5]||s[6])&&n%3&&!((n+i)%3)){o+=i;continue}if(l-=i,l>0)continue;i=Math.min(i,i+l+o);const t=[...s[0]][0].length,a=e.slice(0,n+s.index+t+i);if(Math.min(n,i)%2){const e=a.slice(1,-1);return{type:"em",raw:a,text:e,tokens:this.lexer.inlineTokens(e)}}const c=a.slice(2,-2);return{type:"strong",raw:a,text:c,tokens:this.lexer.inlineTokens(c)}}}}codespan(e){const t=this.rules.inline.code.exec(e);if(t){let e=t[2].replace(/\n/g," ");const n=/[^ ]/.test(e),s=/^ /.test(e)&&/ $/.test(e);return n&&s&&(e=e.substring(1,e.length-1)),e=c(e,!0),{type:"codespan",raw:t[0],text:e}}}br(e){const t=this.rules.inline.br.exec(e);if(t)return{type:"br",raw:t[0]}}del(e){const t=this.rules.inline.del.exec(e);if(t)return{type:"del",raw:t[0],text:t[2],tokens:this.lexer.inlineTokens(t[2])}}autolink(e){const t=this.rules.inline.autolink.exec(e);if(t){let e,n;return"@"===t[2]?(e=c(t[1]),n="mailto:"+e):(e=c(t[1]),n=e),{type:"link",raw:t[0],text:e,href:n,tokens:[{type:"text",raw:e,text:e}]}}}url(e){let t;if(t=this.rules.inline.url.exec(e)){let e,n;if("@"===t[2])e=c(t[0]),n="mailto:"+e;else{let s;do{s=t[0],t[0]=this.rules.inline._backpedal.exec(t[0])?.[0]??""}while(s!==t[0]);e=c(t[0]),n="www."===t[1]?"http://"+t[0]:t[0]}return{type:"link",raw:t[0],text:e,href:n,tokens:[{type:"text",raw:e,text:e}]}}}inlineText(e){const t=this.rules.inline.text.exec(e);if(t){let e;return e=this.lexer.state.inRawBlock?t[0]:c(t[0]),{type:"text",raw:t[0],text:e}}}}const m=/^ {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/,y=/(?:[*+-]|\d{1,9}[.)])/,$=k(/^(?!bull )((?:.|\n(?!\s*?\n|bull ))+?)\n {0,3}(=+|-+) *(?:\n+|$)/).replace(/bull/g,y).getRegex(),z=/^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/,T=/(?!\s*\])(?:\\.|[^\[\]\\])+/,R=k(/^ {0,3}\[(label)\]: *(?:\n *)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n *)?| *\n *)(title))? *(?:\n+|$)/).replace("label",T).replace("title",/(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/).getRegex(),_=k(/^( {0,3}bull)([ \t][^\n]+?)?(?:\n|$)/).replace(/bull/g,y).getRegex(),A="address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul",S=/<!--(?:-?>|[\s\S]*?(?:-->|$))/,I=k("^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n+|$)|comment[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>\\n*|$)|<![A-Z][\\s\\S]*?(?:>\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>\\n*|$)|</?(tag)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n *)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?:attribute)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n *)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n *)+\\n|$))","i").replace("comment",S).replace("tag",A).replace("attribute",/ +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>`]+)?/).getRegex(),E=k(z).replace("hr",m).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("|lheading","").replace("|table","").replace("blockquote"," {0,3}>").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",A).getRegex(),Z={blockquote:k(/^( {0,3}> ?(paragraph|[^\n]*)(?:\n|$))+/).replace("paragraph",E).getRegex(),code:/^( {4}[^\n]+(?:\n(?: *(?:\n|$))*)?)+/,def:R,fences:/^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}\1[~`]* *(?=\n|$)|$)/,heading:/^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/,hr:m,html:I,lheading:$,list:_,newline:/^(?: *(?:\n|$))+/,paragraph:E,table:f,text:/^[^\n]+/},q=k("^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n|hr|heading|blockquote|code|fences|list|html).*(?:\\n|$))*)\\n*|$)").replace("hr",m).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("blockquote"," {0,3}>").replace("code"," {4}[^\\n]").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",A).getRegex(),L={...Z,table:q,paragraph:k(z).replace("hr",m).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("|lheading","").replace("table",q).replace("blockquote"," {0,3}>").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",A).getRegex()},P={...Z,html:k("^ *(?:comment *(?:\\n|\\s*$)|<(tag)[\\s\\S]+?</\\1> *(?:\\n{2,}|\\s*$)|<tag(?:\"[^\"]*\"|'[^']*'|\\s[^'\"/>\\s]*)*?/?> *(?:\\n{2,}|\\s*$))").replace("comment",S).replace(/tag/g,"(?!(?:a|em|strong|small|s|cite|q|dfn|abbr|data|time|code|var|samp|kbd|sub|sup|i|b|u|mark|ruby|rt|rp|bdi|bdo|span|br|wbr|ins|del|img)\\b)\\w+(?!:|[^\\w\\s@]*@)\\b").getRegex(),def:/^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +(["(][^\n]+[")]))? *(?:\n+|$)/,heading:/^(#{1,6})(.*)(?:\n+|$)/,fences:f,lheading:/^(.+?)\n {0,3}(=+|-+) *(?:\n+|$)/,paragraph:k(z).replace("hr",m).replace("heading"," *#{1,6} *[^\n]").replace("lheading",$).replace("|table","").replace("blockquote"," {0,3}>").replace("|fences","").replace("|list","").replace("|html","").replace("|tag","").getRegex()},Q=/^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/,v=/^( {2,}|\\)\n(?!\s*$)/,B="\\p{P}\\p{S}",M=k(/^((?![*_])[\spunctuation])/,"u").replace(/punctuation/g,B).getRegex(),O=k(/^(?:\*+(?:((?!\*)[punct])|[^\s*]))|^_+(?:((?!_)[punct])|([^\s_]))/,"u").replace(/punct/g,B).getRegex(),C=k("^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)[punct](\\*+)(?=[\\s]|$)|[^punct\\s](\\*+)(?!\\*)(?=[punct\\s]|$)|(?!\\*)[punct\\s](\\*+)(?=[^punct\\s])|[\\s](\\*+)(?!\\*)(?=[punct])|(?!\\*)[punct](\\*+)(?!\\*)(?=[punct])|[^punct\\s](\\*+)(?=[^punct\\s])","gu").replace(/punct/g,B).getRegex(),D=k("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)[punct](_+)(?=[\\s]|$)|[^punct\\s](_+)(?!_)(?=[punct\\s]|$)|(?!_)[punct\\s](_+)(?=[^punct\\s])|[\\s](_+)(?!_)(?=[punct])|(?!_)[punct](_+)(?!_)(?=[punct])","gu").replace(/punct/g,B).getRegex(),j=k(/\\([punct])/,"gu").replace(/punct/g,B).getRegex(),H=k(/^<(scheme:[^\s\x00-\x1f<>]*|email)>/).replace("scheme",/[a-zA-Z][a-zA-Z0-9+.-]{1,31}/).replace("email",/[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])/).getRegex(),U=k(S).replace("(?:--\x3e|$)","--\x3e").getRegex(),X=k("^comment|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:attribute)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>").replace("comment",U).replace("attribute",/\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/).getRegex(),F=/(?:\[(?:\\.|[^\[\]\\])*\]|\\.|`[^`]*`|[^\[\]\\`])*?/,N=k(/^!?\[(label)\]\(\s*(href)(?:\s+(title))?\s*\)/).replace("label",F).replace("href",/<(?:\\.|[^\n<>\\])+>|[^\s\x00-\x1f]*/).replace("title",/"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/).getRegex(),G=k(/^!?\[(label)\]\[(ref)\]/).replace("label",F).replace("ref",T).getRegex(),J=k(/^!?\[(ref)\](?:\[\])?/).replace("ref",T).getRegex(),K={_backpedal:f,anyPunctuation:j,autolink:H,blockSkip:/\[[^[\]]*?\]\([^\(\)]*?\)|`[^`]*?`|<[^<>]*?>/g,br:v,code:/^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/,del:f,emStrongLDelim:O,emStrongRDelimAst:C,emStrongRDelimUnd:D,escape:Q,link:N,nolink:J,punctuation:M,reflink:G,reflinkSearch:k("reflink|nolink(?!\\()","g").replace("reflink",G).replace("nolink",J).getRegex(),tag:X,text:/^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/,url:f},V={...K,link:k(/^!?\[(label)\]\((.*?)\)/).replace("label",F).getRegex(),reflink:k(/^!?\[(label)\]\s*\[([^\]]*)\]/).replace("label",F).getRegex()},W={...K,escape:k(Q).replace("])","~|])").getRegex(),url:k(/^((?:ftp|https?):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*|^email/,"i").replace("email",/[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/).getRegex(),_backpedal:/(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/,del:/^(~~?)(?=[^\s~])([\s\S]*?[^\s~])\1(?=[^~]|$)/,text:/^([`~]+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|https?:\/\/|ftp:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/},Y={...W,br:k(v).replace("{2,}","*").getRegex(),text:k(W.text).replace("\\b_","\\b_| {2,}\\n").replace(/\{2,\}/g,"*").getRegex()},ee={normal:Z,gfm:L,pedantic:P},te={normal:K,gfm:W,breaks:Y,pedantic:V};class ne{tokens;options;state;tokenizer;inlineQueue;constructor(t){this.tokens=[],this.tokens.links=Object.create(null),this.options=t||e.defaults,this.options.tokenizer=this.options.tokenizer||new w,this.tokenizer=this.options.tokenizer,this.tokenizer.options=this.options,this.tokenizer.lexer=this,this.inlineQueue=[],this.state={inLink:!1,inRawBlock:!1,top:!0};const n={block:ee.normal,inline:te.normal};this.options.pedantic?(n.block=ee.pedantic,n.inline=te.pedantic):this.options.gfm&&(n.block=ee.gfm,this.options.breaks?n.inline=te.breaks:n.inline=te.gfm),this.tokenizer.rules=n}static get rules(){return{block:ee,inline:te}}static lex(e,t){return new ne(t).lex(e)}static lexInline(e,t){return new ne(t).inlineTokens(e)}lex(e){e=e.replace(/\r\n|\r/g,"\n"),this.blockTokens(e,this.tokens);for(let e=0;e<this.inlineQueue.length;e++){const t=this.inlineQueue[e];this.inlineTokens(t.src,t.tokens)}return this.inlineQueue=[],this.tokens}blockTokens(e,t=[]){let n,s,r,i;for(e=this.options.pedantic?e.replace(/\t/g,"    ").replace(/^ +$/gm,""):e.replace(/^( *)(\t+)/gm,((e,t,n)=>t+"    ".repeat(n.length)));e;)if(!(this.options.extensions&&this.options.extensions.block&&this.options.extensions.block.some((s=>!!(n=s.call({lexer:this},e,t))&&(e=e.substring(n.raw.length),t.push(n),!0)))))if(n=this.tokenizer.space(e))e=e.substring(n.raw.length),1===n.raw.length&&t.length>0?t[t.length-1].raw+="\n":t.push(n);else if(n=this.tokenizer.code(e))e=e.substring(n.raw.length),s=t[t.length-1],!s||"paragraph"!==s.type&&"text"!==s.type?t.push(n):(s.raw+="\n"+n.raw,s.text+="\n"+n.text,this.inlineQueue[this.inlineQueue.length-1].src=s.text);else if(n=this.tokenizer.fences(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.heading(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.hr(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.blockquote(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.list(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.html(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.def(e))e=e.substring(n.raw.length),s=t[t.length-1],!s||"paragraph"!==s.type&&"text"!==s.type?this.tokens.links[n.tag]||(this.tokens.links[n.tag]={href:n.href,title:n.title}):(s.raw+="\n"+n.raw,s.text+="\n"+n.raw,this.inlineQueue[this.inlineQueue.length-1].src=s.text);else if(n=this.tokenizer.table(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.lheading(e))e=e.substring(n.raw.length),t.push(n);else{if(r=e,this.options.extensions&&this.options.extensions.startBlock){let t=1/0;const n=e.slice(1);let s;this.options.extensions.startBlock.forEach((e=>{s=e.call({lexer:this},n),"number"==typeof s&&s>=0&&(t=Math.min(t,s))})),t<1/0&&t>=0&&(r=e.substring(0,t+1))}if(this.state.top&&(n=this.tokenizer.paragraph(r)))s=t[t.length-1],i&&"paragraph"===s.type?(s.raw+="\n"+n.raw,s.text+="\n"+n.text,this.inlineQueue.pop(),this.inlineQueue[this.inlineQueue.length-1].src=s.text):t.push(n),i=r.length!==e.length,e=e.substring(n.raw.length);else if(n=this.tokenizer.text(e))e=e.substring(n.raw.length),s=t[t.length-1],s&&"text"===s.type?(s.raw+="\n"+n.raw,s.text+="\n"+n.text,this.inlineQueue.pop(),this.inlineQueue[this.inlineQueue.length-1].src=s.text):t.push(n);else if(e){const t="Infinite loop on byte: "+e.charCodeAt(0);if(this.options.silent){console.error(t);break}throw new Error(t)}}return this.state.top=!0,t}inline(e,t=[]){return this.inlineQueue.push({src:e,tokens:t}),t}inlineTokens(e,t=[]){let n,s,r,i,l,o,a=e;if(this.tokens.links){const e=Object.keys(this.tokens.links);if(e.length>0)for(;null!=(i=this.tokenizer.rules.inline.reflinkSearch.exec(a));)e.includes(i[0].slice(i[0].lastIndexOf("[")+1,-1))&&(a=a.slice(0,i.index)+"["+"a".repeat(i[0].length-2)+"]"+a.slice(this.tokenizer.rules.inline.reflinkSearch.lastIndex))}for(;null!=(i=this.tokenizer.rules.inline.blockSkip.exec(a));)a=a.slice(0,i.index)+"["+"a".repeat(i[0].length-2)+"]"+a.slice(this.tokenizer.rules.inline.blockSkip.lastIndex);for(;null!=(i=this.tokenizer.rules.inline.anyPunctuation.exec(a));)a=a.slice(0,i.index)+"++"+a.slice(this.tokenizer.rules.inline.anyPunctuation.lastIndex);for(;e;)if(l||(o=""),l=!1,!(this.options.extensions&&this.options.extensions.inline&&this.options.extensions.inline.some((s=>!!(n=s.call({lexer:this},e,t))&&(e=e.substring(n.raw.length),t.push(n),!0)))))if(n=this.tokenizer.escape(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.tag(e))e=e.substring(n.raw.length),s=t[t.length-1],s&&"text"===n.type&&"text"===s.type?(s.raw+=n.raw,s.text+=n.text):t.push(n);else if(n=this.tokenizer.link(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.reflink(e,this.tokens.links))e=e.substring(n.raw.length),s=t[t.length-1],s&&"text"===n.type&&"text"===s.type?(s.raw+=n.raw,s.text+=n.text):t.push(n);else if(n=this.tokenizer.emStrong(e,a,o))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.codespan(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.br(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.del(e))e=e.substring(n.raw.length),t.push(n);else if(n=this.tokenizer.autolink(e))e=e.substring(n.raw.length),t.push(n);else if(this.state.inLink||!(n=this.tokenizer.url(e))){if(r=e,this.options.extensions&&this.options.extensions.startInline){let t=1/0;const n=e.slice(1);let s;this.options.extensions.startInline.forEach((e=>{s=e.call({lexer:this},n),"number"==typeof s&&s>=0&&(t=Math.min(t,s))})),t<1/0&&t>=0&&(r=e.substring(0,t+1))}if(n=this.tokenizer.inlineText(r))e=e.substring(n.raw.length),"_"!==n.raw.slice(-1)&&(o=n.raw.slice(-1)),l=!0,s=t[t.length-1],s&&"text"===s.type?(s.raw+=n.raw,s.text+=n.text):t.push(n);else if(e){const t="Infinite loop on byte: "+e.charCodeAt(0);if(this.options.silent){console.error(t);break}throw new Error(t)}}else e=e.substring(n.raw.length),t.push(n);return t}}class se{options;constructor(t){this.options=t||e.defaults}code(e,t,n){const s=(t||"").match(/^\S*/)?.[0];return e=e.replace(/\n$/,"")+"\n",s?'<pre><code class="language-'+c(s)+'">'+(n?e:c(e,!0))+"</code></pre>\n":"<pre><code>"+(n?e:c(e,!0))+"</code></pre>\n"}blockquote(e){return`<blockquote>\n${e}</blockquote>\n`}html(e,t){return e}heading(e,t,n){return`<h${t}>${e}</h${t}>\n`}hr(){return"<hr>\n"}list(e,t,n){const s=t?"ol":"ul";return"<"+s+(t&&1!==n?' start="'+n+'"':"")+">\n"+e+"</"+s+">\n"}listitem(e,t,n){return`<li>${e}</li>\n`}checkbox(e){return"<input "+(e?'checked="" ':"")+'disabled="" type="checkbox">'}paragraph(e){return`<p>${e}</p>\n`}table(e,t){return t&&(t=`<tbody>${t}</tbody>`),"<table>\n<thead>\n"+e+"</thead>\n"+t+"</table>\n"}tablerow(e){return`<tr>\n${e}</tr>\n`}tablecell(e,t){const n=t.header?"th":"td";return(t.align?`<${n} align="${t.align}">`:`<${n}>`)+e+`</${n}>\n`}strong(e){return`<strong>${e}</strong>`}em(e){return`<em>${e}</em>`}codespan(e){return`<code>${e}</code>`}br(){return"<br>"}del(e){return`<del>${e}</del>`}link(e,t,n){const s=g(e);if(null===s)return n;let r='<a href="'+(e=s)+'"';return t&&(r+=' title="'+t+'"'),r+=">"+n+"</a>",r}image(e,t,n){const s=g(e);if(null===s)return n;let r=`<img src="${e=s}" alt="${n}"`;return t&&(r+=` title="${t}"`),r+=">",r}text(e){return e}}class re{strong(e){return e}em(e){return e}codespan(e){return e}del(e){return e}html(e){return e}text(e){return e}link(e,t,n){return""+n}image(e,t,n){return""+n}br(){return""}}class ie{options;renderer;textRenderer;constructor(t){this.options=t||e.defaults,this.options.renderer=this.options.renderer||new se,this.renderer=this.options.renderer,this.renderer.options=this.options,this.textRenderer=new re}static parse(e,t){return new ie(t).parse(e)}static parseInline(e,t){return new ie(t).parseInline(e)}parse(e,t=!0){let n="";for(let s=0;s<e.length;s++){const r=e[s];if(this.options.extensions&&this.options.extensions.renderers&&this.options.extensions.renderers[r.type]){const e=r,t=this.options.extensions.renderers[e.type].call({parser:this},e);if(!1!==t||!["space","hr","heading","code","table","blockquote","list","html","paragraph","text"].includes(e.type)){n+=t||"";continue}}switch(r.type){case"space":continue;case"hr":n+=this.renderer.hr();continue;case"heading":{const e=r;n+=this.renderer.heading(this.parseInline(e.tokens),e.depth,p(this.parseInline(e.tokens,this.textRenderer)));continue}case"code":{const e=r;n+=this.renderer.code(e.text,e.lang,!!e.escaped);continue}case"table":{const e=r;let t="",s="";for(let t=0;t<e.header.length;t++)s+=this.renderer.tablecell(this.parseInline(e.header[t].tokens),{header:!0,align:e.align[t]});t+=this.renderer.tablerow(s);let i="";for(let t=0;t<e.rows.length;t++){const n=e.rows[t];s="";for(let t=0;t<n.length;t++)s+=this.renderer.tablecell(this.parseInline(n[t].tokens),{header:!1,align:e.align[t]});i+=this.renderer.tablerow(s)}n+=this.renderer.table(t,i);continue}case"blockquote":{const e=r,t=this.parse(e.tokens);n+=this.renderer.blockquote(t);continue}case"list":{const e=r,t=e.ordered,s=e.start,i=e.loose;let l="";for(let t=0;t<e.items.length;t++){const n=e.items[t],s=n.checked,r=n.task;let o="";if(n.task){const e=this.renderer.checkbox(!!s);i?n.tokens.length>0&&"paragraph"===n.tokens[0].type?(n.tokens[0].text=e+" "+n.tokens[0].text,n.tokens[0].tokens&&n.tokens[0].tokens.length>0&&"text"===n.tokens[0].tokens[0].type&&(n.tokens[0].tokens[0].text=e+" "+n.tokens[0].tokens[0].text)):n.tokens.unshift({type:"text",text:e+" "}):o+=e+" "}o+=this.parse(n.tokens,i),l+=this.renderer.listitem(o,r,!!s)}n+=this.renderer.list(l,t,s);continue}case"html":{const e=r;n+=this.renderer.html(e.text,e.block);continue}case"paragraph":{const e=r;n+=this.renderer.paragraph(this.parseInline(e.tokens));continue}case"text":{let i=r,l=i.tokens?this.parseInline(i.tokens):i.text;for(;s+1<e.length&&"text"===e[s+1].type;)i=e[++s],l+="\n"+(i.tokens?this.parseInline(i.tokens):i.text);n+=t?this.renderer.paragraph(l):l;continue}default:{const e='Token with "'+r.type+'" type was not found.';if(this.options.silent)return console.error(e),"";throw new Error(e)}}}return n}parseInline(e,t){t=t||this.renderer;let n="";for(let s=0;s<e.length;s++){const r=e[s];if(this.options.extensions&&this.options.extensions.renderers&&this.options.extensions.renderers[r.type]){const e=this.options.extensions.renderers[r.type].call({parser:this},r);if(!1!==e||!["escape","html","link","image","strong","em","codespan","br","del","text"].includes(r.type)){n+=e||"";continue}}switch(r.type){case"escape":{const e=r;n+=t.text(e.text);break}case"html":{const e=r;n+=t.html(e.text);break}case"link":{const e=r;n+=t.link(e.href,e.title,this.parseInline(e.tokens,t));break}case"image":{const e=r;n+=t.image(e.href,e.title,e.text);break}case"strong":{const e=r;n+=t.strong(this.parseInline(e.tokens,t));break}case"em":{const e=r;n+=t.em(this.parseInline(e.tokens,t));break}case"codespan":{const e=r;n+=t.codespan(e.text);break}case"br":n+=t.br();break;case"del":{const e=r;n+=t.del(this.parseInline(e.tokens,t));break}case"text":{const e=r;n+=t.text(e.text);break}default:{const e='Token with "'+r.type+'" type was not found.';if(this.options.silent)return console.error(e),"";throw new Error(e)}}}return n}}class le{options;constructor(t){this.options=t||e.defaults}static passThroughHooks=new Set(["preprocess","postprocess","processAllTokens"]);preprocess(e){return e}postprocess(e){return e}processAllTokens(e){return e}}class oe{defaults={async:!1,breaks:!1,extensions:null,gfm:!0,hooks:null,pedantic:!1,renderer:null,silent:!1,tokenizer:null,walkTokens:null};options=this.setOptions;parse=this.#e(ne.lex,ie.parse);parseInline=this.#e(ne.lexInline,ie.parseInline);Parser=ie;Renderer=se;TextRenderer=re;Lexer=ne;Tokenizer=w;Hooks=le;constructor(...e){this.use(...e)}walkTokens(e,t){let n=[];for(const s of e)switch(n=n.concat(t.call(this,s)),s.type){case"table":{const e=s;for(const s of e.header)n=n.concat(this.walkTokens(s.tokens,t));for(const s of e.rows)for(const e of s)n=n.concat(this.walkTokens(e.tokens,t));break}case"list":{const e=s;n=n.concat(this.walkTokens(e.items,t));break}default:{const e=s;this.defaults.extensions?.childTokens?.[e.type]?this.defaults.extensions.childTokens[e.type].forEach((s=>{const r=e[s].flat(1/0);n=n.concat(this.walkTokens(r,t))})):e.tokens&&(n=n.concat(this.walkTokens(e.tokens,t)))}}return n}use(...e){const t=this.defaults.extensions||{renderers:{},childTokens:{}};return e.forEach((e=>{const n={...e};if(n.async=this.defaults.async||n.async||!1,e.extensions&&(e.extensions.forEach((e=>{if(!e.name)throw new Error("extension name required");if("renderer"in e){const n=t.renderers[e.name];t.renderers[e.name]=n?function(...t){let s=e.renderer.apply(this,t);return!1===s&&(s=n.apply(this,t)),s}:e.renderer}if("tokenizer"in e){if(!e.level||"block"!==e.level&&"inline"!==e.level)throw new Error("extension level must be 'block' or 'inline'");const n=t[e.level];n?n.unshift(e.tokenizer):t[e.level]=[e.tokenizer],e.start&&("block"===e.level?t.startBlock?t.startBlock.push(e.start):t.startBlock=[e.start]:"inline"===e.level&&(t.startInline?t.startInline.push(e.start):t.startInline=[e.start]))}"childTokens"in e&&e.childTokens&&(t.childTokens[e.name]=e.childTokens)})),n.extensions=t),e.renderer){const t=this.defaults.renderer||new se(this.defaults);for(const n in e.renderer){if(!(n in t))throw new Error(`renderer '${n}' does not exist`);if("options"===n)continue;const s=n,r=e.renderer[s],i=t[s];t[s]=(...e)=>{let n=r.apply(t,e);return!1===n&&(n=i.apply(t,e)),n||""}}n.renderer=t}if(e.tokenizer){const t=this.defaults.tokenizer||new w(this.defaults);for(const n in e.tokenizer){if(!(n in t))throw new Error(`tokenizer '${n}' does not exist`);if(["options","rules","lexer"].includes(n))continue;const s=n,r=e.tokenizer[s],i=t[s];t[s]=(...e)=>{let n=r.apply(t,e);return!1===n&&(n=i.apply(t,e)),n}}n.tokenizer=t}if(e.hooks){const t=this.defaults.hooks||new le;for(const n in e.hooks){if(!(n in t))throw new Error(`hook '${n}' does not exist`);if("options"===n)continue;const s=n,r=e.hooks[s],i=t[s];le.passThroughHooks.has(n)?t[s]=e=>{if(this.defaults.async)return Promise.resolve(r.call(t,e)).then((e=>i.call(t,e)));const n=r.call(t,e);return i.call(t,n)}:t[s]=(...e)=>{let n=r.apply(t,e);return!1===n&&(n=i.apply(t,e)),n}}n.hooks=t}if(e.walkTokens){const t=this.defaults.walkTokens,s=e.walkTokens;n.walkTokens=function(e){let n=[];return n.push(s.call(this,e)),t&&(n=n.concat(t.call(this,e))),n}}this.defaults={...this.defaults,...n}})),this}setOptions(e){return this.defaults={...this.defaults,...e},this}lexer(e,t){return ne.lex(e,t??this.defaults)}parser(e,t){return ie.parse(e,t??this.defaults)}#e(e,t){return(n,s)=>{const r={...s},i={...this.defaults,...r};!0===this.defaults.async&&!1===r.async&&(i.silent||console.warn("marked(): The async option was set to true by an extension. The async: false option sent to parse will be ignored."),i.async=!0);const l=this.#t(!!i.silent,!!i.async);if(null==n)return l(new Error("marked(): input parameter is undefined or null"));if("string"!=typeof n)return l(new Error("marked(): input parameter is of type "+Object.prototype.toString.call(n)+", string expected"));if(i.hooks&&(i.hooks.options=i),i.async)return Promise.resolve(i.hooks?i.hooks.preprocess(n):n).then((t=>e(t,i))).then((e=>i.hooks?i.hooks.processAllTokens(e):e)).then((e=>i.walkTokens?Promise.all(this.walkTokens(e,i.walkTokens)).then((()=>e)):e)).then((e=>t(e,i))).then((e=>i.hooks?i.hooks.postprocess(e):e)).catch(l);try{i.hooks&&(n=i.hooks.preprocess(n));let s=e(n,i);i.hooks&&(s=i.hooks.processAllTokens(s)),i.walkTokens&&this.walkTokens(s,i.walkTokens);let r=t(s,i);return i.hooks&&(r=i.hooks.postprocess(r)),r}catch(e){return l(e)}}}#t(e,t){return n=>{if(n.message+="\nPlease report this to https://github.com/markedjs/marked.",e){const e="<p>An error occurred:</p><pre>"+c(n.message+"",!0)+"</pre>";return t?Promise.resolve(e):e}if(t)return Promise.reject(n);throw n}}}const ae=new oe;function ce(e,t){return ae.parse(e,t)}ce.options=ce.setOptions=function(e){return ae.setOptions(e),ce.defaults=ae.defaults,n(ce.defaults),ce},ce.getDefaults=t,ce.defaults=e.defaults,ce.use=function(...e){return ae.use(...e),ce.defaults=ae.defaults,n(ce.defaults),ce},ce.walkTokens=function(e,t){return ae.walkTokens(e,t)},ce.parseInline=ae.parseInline,ce.Parser=ie,ce.parser=ie.parse,ce.Renderer=se,ce.TextRenderer=re,ce.Lexer=ne,ce.lexer=ne.lex,ce.Tokenizer=w,ce.Hooks=le,ce.parse=ce;const he=ce.options,pe=ce.setOptions,ue=ce.use,ke=ce.walkTokens,ge=ce.parseInline,fe=ce,de=ie.parse,xe=ne.lex;e.Hooks=le,e.Lexer=ne,e.Marked=oe,e.Parser=ie,e.Renderer=se,e.TextRenderer=re,e.Tokenizer=w,e.getDefaults=t,e.lexer=xe,e.marked=ce,e.options=he,e.parse=fe,e.parseInline=ge,e.parser=de,e.setOptions=pe,e.use=ue,e.walkTokens=ke}));
+// ===== FILE END =====
+// ===== FILE BEGIN: web-static\lib\purify.min.js =====
+/*! @license DOMPurify 3.0.9 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.0.9/LICENSE */
+!function(e,t){"object"==typeof exports&&"undefined"!=typeof module?module.exports=t():"function"==typeof define&&define.amd?define(t):(e="undefined"!=typeof globalThis?globalThis:e||self).DOMPurify=t()}(this,(function(){"use strict";const{entries:e,setPrototypeOf:t,isFrozen:n,getPrototypeOf:o,getOwnPropertyDescriptor:r}=Object;let{freeze:i,seal:a,create:l}=Object,{apply:c,construct:s}="undefined"!=typeof Reflect&&Reflect;i||(i=function(e){return e}),a||(a=function(e){return e}),c||(c=function(e,t,n){return e.apply(t,n)}),s||(s=function(e,t){return new e(...t)});const u=N(Array.prototype.forEach),m=N(Array.prototype.pop),f=N(Array.prototype.push),p=N(String.prototype.toLowerCase),d=N(String.prototype.toString),h=N(String.prototype.match),g=N(String.prototype.replace),T=N(String.prototype.indexOf),y=N(String.prototype.trim),E=N(Object.prototype.hasOwnProperty),A=N(RegExp.prototype.test),_=(b=TypeError,function(){for(var e=arguments.length,t=new Array(e),n=0;n<e;n++)t[n]=arguments[n];return s(b,t)});var b;function N(e){return function(t){for(var n=arguments.length,o=new Array(n>1?n-1:0),r=1;r<n;r++)o[r-1]=arguments[r];return c(e,t,o)}}function S(e,o){let r=arguments.length>2&&void 0!==arguments[2]?arguments[2]:p;t&&t(e,null);let i=o.length;for(;i--;){let t=o[i];if("string"==typeof t){const e=r(t);e!==t&&(n(o)||(o[i]=e),t=e)}e[t]=!0}return e}function R(e){for(let t=0;t<e.length;t++){E(e,t)||(e[t]=null)}return e}function w(t){const n=l(null);for(const[o,r]of e(t)){E(t,o)&&(Array.isArray(r)?n[o]=R(r):r&&"object"==typeof r&&r.constructor===Object?n[o]=w(r):n[o]=r)}return n}function D(e,t){for(;null!==e;){const n=r(e,t);if(n){if(n.get)return N(n.get);if("function"==typeof n.value)return N(n.value)}e=o(e)}return function(){return null}}const L=i(["a","abbr","acronym","address","area","article","aside","audio","b","bdi","bdo","big","blink","blockquote","body","br","button","canvas","caption","center","cite","code","col","colgroup","content","data","datalist","dd","decorator","del","details","dfn","dialog","dir","div","dl","dt","element","em","fieldset","figcaption","figure","font","footer","form","h1","h2","h3","h4","h5","h6","head","header","hgroup","hr","html","i","img","input","ins","kbd","label","legend","li","main","map","mark","marquee","menu","menuitem","meter","nav","nobr","ol","optgroup","option","output","p","picture","pre","progress","q","rp","rt","ruby","s","samp","section","select","shadow","small","source","spacer","span","strike","strong","style","sub","summary","sup","table","tbody","td","template","textarea","tfoot","th","thead","time","tr","track","tt","u","ul","var","video","wbr"]),x=i(["svg","a","altglyph","altglyphdef","altglyphitem","animatecolor","animatemotion","animatetransform","circle","clippath","defs","desc","ellipse","filter","font","g","glyph","glyphref","hkern","image","line","lineargradient","marker","mask","metadata","mpath","path","pattern","polygon","polyline","radialgradient","rect","stop","style","switch","symbol","text","textpath","title","tref","tspan","view","vkern"]),v=i(["feBlend","feColorMatrix","feComponentTransfer","feComposite","feConvolveMatrix","feDiffuseLighting","feDisplacementMap","feDistantLight","feDropShadow","feFlood","feFuncA","feFuncB","feFuncG","feFuncR","feGaussianBlur","feImage","feMerge","feMergeNode","feMorphology","feOffset","fePointLight","feSpecularLighting","feSpotLight","feTile","feTurbulence"]),C=i(["animate","color-profile","cursor","discard","font-face","font-face-format","font-face-name","font-face-src","font-face-uri","foreignobject","hatch","hatchpath","mesh","meshgradient","meshpatch","meshrow","missing-glyph","script","set","solidcolor","unknown","use"]),k=i(["math","menclose","merror","mfenced","mfrac","mglyph","mi","mlabeledtr","mmultiscripts","mn","mo","mover","mpadded","mphantom","mroot","mrow","ms","mspace","msqrt","mstyle","msub","msup","msubsup","mtable","mtd","mtext","mtr","munder","munderover","mprescripts"]),O=i(["maction","maligngroup","malignmark","mlongdiv","mscarries","mscarry","msgroup","mstack","msline","msrow","semantics","annotation","annotation-xml","mprescripts","none"]),I=i(["#text"]),M=i(["accept","action","align","alt","autocapitalize","autocomplete","autopictureinpicture","autoplay","background","bgcolor","border","capture","cellpadding","cellspacing","checked","cite","class","clear","color","cols","colspan","controls","controlslist","coords","crossorigin","datetime","decoding","default","dir","disabled","disablepictureinpicture","disableremoteplayback","download","draggable","enctype","enterkeyhint","face","for","headers","height","hidden","high","href","hreflang","id","inputmode","integrity","ismap","kind","label","lang","list","loading","loop","low","max","maxlength","media","method","min","minlength","multiple","muted","name","nonce","noshade","novalidate","nowrap","open","optimum","pattern","placeholder","playsinline","poster","preload","pubdate","radiogroup","readonly","rel","required","rev","reversed","role","rows","rowspan","spellcheck","scope","selected","shape","size","sizes","span","srclang","start","src","srcset","step","style","summary","tabindex","title","translate","type","usemap","valign","value","width","xmlns","slot"]),U=i(["accent-height","accumulate","additive","alignment-baseline","ascent","attributename","attributetype","azimuth","basefrequency","baseline-shift","begin","bias","by","class","clip","clippathunits","clip-path","clip-rule","color","color-interpolation","color-interpolation-filters","color-profile","color-rendering","cx","cy","d","dx","dy","diffuseconstant","direction","display","divisor","dur","edgemode","elevation","end","fill","fill-opacity","fill-rule","filter","filterunits","flood-color","flood-opacity","font-family","font-size","font-size-adjust","font-stretch","font-style","font-variant","font-weight","fx","fy","g1","g2","glyph-name","glyphref","gradientunits","gradienttransform","height","href","id","image-rendering","in","in2","k","k1","k2","k3","k4","kerning","keypoints","keysplines","keytimes","lang","lengthadjust","letter-spacing","kernelmatrix","kernelunitlength","lighting-color","local","marker-end","marker-mid","marker-start","markerheight","markerunits","markerwidth","maskcontentunits","maskunits","max","mask","media","method","mode","min","name","numoctaves","offset","operator","opacity","order","orient","orientation","origin","overflow","paint-order","path","pathlength","patterncontentunits","patterntransform","patternunits","points","preservealpha","preserveaspectratio","primitiveunits","r","rx","ry","radius","refx","refy","repeatcount","repeatdur","restart","result","rotate","scale","seed","shape-rendering","specularconstant","specularexponent","spreadmethod","startoffset","stddeviation","stitchtiles","stop-color","stop-opacity","stroke-dasharray","stroke-dashoffset","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-opacity","stroke","stroke-width","style","surfacescale","systemlanguage","tabindex","targetx","targety","transform","transform-origin","text-anchor","text-decoration","text-rendering","textlength","type","u1","u2","unicode","values","viewbox","visibility","version","vert-adv-y","vert-origin-x","vert-origin-y","width","word-spacing","wrap","writing-mode","xchannelselector","ychannelselector","x","x1","x2","xmlns","y","y1","y2","z","zoomandpan"]),P=i(["accent","accentunder","align","bevelled","close","columnsalign","columnlines","columnspan","denomalign","depth","dir","display","displaystyle","encoding","fence","frame","height","href","id","largeop","length","linethickness","lspace","lquote","mathbackground","mathcolor","mathsize","mathvariant","maxsize","minsize","movablelimits","notation","numalign","open","rowalign","rowlines","rowspacing","rowspan","rspace","rquote","scriptlevel","scriptminsize","scriptsizemultiplier","selection","separator","separators","stretchy","subscriptshift","supscriptshift","symmetric","voffset","width","xmlns"]),F=i(["xlink:href","xml:id","xlink:title","xml:space","xmlns:xlink"]),H=a(/\{\{[\w\W]*|[\w\W]*\}\}/gm),z=a(/<%[\w\W]*|[\w\W]*%>/gm),B=a(/\${[\w\W]*}/gm),W=a(/^data-[\-\w.\u00B7-\uFFFF]/),G=a(/^aria-[\-\w]+$/),Y=a(/^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i),j=a(/^(?:\w+script|data):/i),q=a(/[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g),X=a(/^html$/i);var K=Object.freeze({__proto__:null,MUSTACHE_EXPR:H,ERB_EXPR:z,TMPLIT_EXPR:B,DATA_ATTR:W,ARIA_ATTR:G,IS_ALLOWED_URI:Y,IS_SCRIPT_OR_DATA:j,ATTR_WHITESPACE:q,DOCTYPE_NAME:X});const V=function(){return"undefined"==typeof window?null:window},$=function(e,t){if("object"!=typeof e||"function"!=typeof e.createPolicy)return null;let n=null;const o="data-tt-policy-suffix";t&&t.hasAttribute(o)&&(n=t.getAttribute(o));const r="dompurify"+(n?"#"+n:"");try{return e.createPolicy(r,{createHTML:e=>e,createScriptURL:e=>e})}catch(e){return console.warn("TrustedTypes policy "+r+" could not be created."),null}};var Z=function t(){let n=arguments.length>0&&void 0!==arguments[0]?arguments[0]:V();const o=e=>t(e);if(o.version="3.0.9",o.removed=[],!n||!n.document||9!==n.document.nodeType)return o.isSupported=!1,o;let{document:r}=n;const a=r,c=a.currentScript,{DocumentFragment:s,HTMLTemplateElement:b,Node:N,Element:R,NodeFilter:H,NamedNodeMap:z=n.NamedNodeMap||n.MozNamedAttrMap,HTMLFormElement:B,DOMParser:W,trustedTypes:G}=n,j=R.prototype,q=D(j,"cloneNode"),Z=D(j,"nextSibling"),J=D(j,"childNodes"),Q=D(j,"parentNode");if("function"==typeof b){const e=r.createElement("template");e.content&&e.content.ownerDocument&&(r=e.content.ownerDocument)}let ee,te="";const{implementation:ne,createNodeIterator:oe,createDocumentFragment:re,getElementsByTagName:ie}=r,{importNode:ae}=a;let le={};o.isSupported="function"==typeof e&&"function"==typeof Q&&ne&&void 0!==ne.createHTMLDocument;const{MUSTACHE_EXPR:ce,ERB_EXPR:se,TMPLIT_EXPR:ue,DATA_ATTR:me,ARIA_ATTR:fe,IS_SCRIPT_OR_DATA:pe,ATTR_WHITESPACE:de}=K;let{IS_ALLOWED_URI:he}=K,ge=null;const Te=S({},[...L,...x,...v,...k,...I]);let ye=null;const Ee=S({},[...M,...U,...P,...F]);let Ae=Object.seal(l(null,{tagNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},allowCustomizedBuiltInElements:{writable:!0,configurable:!1,enumerable:!0,value:!1}})),_e=null,be=null,Ne=!0,Se=!0,Re=!1,we=!0,De=!1,Le=!1,xe=!1,ve=!1,Ce=!1,ke=!1,Oe=!1,Ie=!0,Me=!1;const Ue="user-content-";let Pe=!0,Fe=!1,He={},ze=null;const Be=S({},["annotation-xml","audio","colgroup","desc","foreignobject","head","iframe","math","mi","mn","mo","ms","mtext","noembed","noframes","noscript","plaintext","script","style","svg","template","thead","title","video","xmp"]);let We=null;const Ge=S({},["audio","video","img","source","image","track"]);let Ye=null;const je=S({},["alt","class","for","id","label","name","pattern","placeholder","role","summary","title","value","style","xmlns"]),qe="http://www.w3.org/1998/Math/MathML",Xe="http://www.w3.org/2000/svg",Ke="http://www.w3.org/1999/xhtml";let Ve=Ke,$e=!1,Ze=null;const Je=S({},[qe,Xe,Ke],d);let Qe=null;const et=["application/xhtml+xml","text/html"],tt="text/html";let nt=null,ot=null;const rt=r.createElement("form"),it=function(e){return e instanceof RegExp||e instanceof Function},at=function(){let e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:{};if(!ot||ot!==e){if(e&&"object"==typeof e||(e={}),e=w(e),Qe=-1===et.indexOf(e.PARSER_MEDIA_TYPE)?tt:e.PARSER_MEDIA_TYPE,nt="application/xhtml+xml"===Qe?d:p,ge=E(e,"ALLOWED_TAGS")?S({},e.ALLOWED_TAGS,nt):Te,ye=E(e,"ALLOWED_ATTR")?S({},e.ALLOWED_ATTR,nt):Ee,Ze=E(e,"ALLOWED_NAMESPACES")?S({},e.ALLOWED_NAMESPACES,d):Je,Ye=E(e,"ADD_URI_SAFE_ATTR")?S(w(je),e.ADD_URI_SAFE_ATTR,nt):je,We=E(e,"ADD_DATA_URI_TAGS")?S(w(Ge),e.ADD_DATA_URI_TAGS,nt):Ge,ze=E(e,"FORBID_CONTENTS")?S({},e.FORBID_CONTENTS,nt):Be,_e=E(e,"FORBID_TAGS")?S({},e.FORBID_TAGS,nt):{},be=E(e,"FORBID_ATTR")?S({},e.FORBID_ATTR,nt):{},He=!!E(e,"USE_PROFILES")&&e.USE_PROFILES,Ne=!1!==e.ALLOW_ARIA_ATTR,Se=!1!==e.ALLOW_DATA_ATTR,Re=e.ALLOW_UNKNOWN_PROTOCOLS||!1,we=!1!==e.ALLOW_SELF_CLOSE_IN_ATTR,De=e.SAFE_FOR_TEMPLATES||!1,Le=e.WHOLE_DOCUMENT||!1,Ce=e.RETURN_DOM||!1,ke=e.RETURN_DOM_FRAGMENT||!1,Oe=e.RETURN_TRUSTED_TYPE||!1,ve=e.FORCE_BODY||!1,Ie=!1!==e.SANITIZE_DOM,Me=e.SANITIZE_NAMED_PROPS||!1,Pe=!1!==e.KEEP_CONTENT,Fe=e.IN_PLACE||!1,he=e.ALLOWED_URI_REGEXP||Y,Ve=e.NAMESPACE||Ke,Ae=e.CUSTOM_ELEMENT_HANDLING||{},e.CUSTOM_ELEMENT_HANDLING&&it(e.CUSTOM_ELEMENT_HANDLING.tagNameCheck)&&(Ae.tagNameCheck=e.CUSTOM_ELEMENT_HANDLING.tagNameCheck),e.CUSTOM_ELEMENT_HANDLING&&it(e.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)&&(Ae.attributeNameCheck=e.CUSTOM_ELEMENT_HANDLING.attributeNameCheck),e.CUSTOM_ELEMENT_HANDLING&&"boolean"==typeof e.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements&&(Ae.allowCustomizedBuiltInElements=e.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements),De&&(Se=!1),ke&&(Ce=!0),He&&(ge=S({},I),ye=[],!0===He.html&&(S(ge,L),S(ye,M)),!0===He.svg&&(S(ge,x),S(ye,U),S(ye,F)),!0===He.svgFilters&&(S(ge,v),S(ye,U),S(ye,F)),!0===He.mathMl&&(S(ge,k),S(ye,P),S(ye,F))),e.ADD_TAGS&&(ge===Te&&(ge=w(ge)),S(ge,e.ADD_TAGS,nt)),e.ADD_ATTR&&(ye===Ee&&(ye=w(ye)),S(ye,e.ADD_ATTR,nt)),e.ADD_URI_SAFE_ATTR&&S(Ye,e.ADD_URI_SAFE_ATTR,nt),e.FORBID_CONTENTS&&(ze===Be&&(ze=w(ze)),S(ze,e.FORBID_CONTENTS,nt)),Pe&&(ge["#text"]=!0),Le&&S(ge,["html","head","body"]),ge.table&&(S(ge,["tbody"]),delete _e.tbody),e.TRUSTED_TYPES_POLICY){if("function"!=typeof e.TRUSTED_TYPES_POLICY.createHTML)throw _('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');if("function"!=typeof e.TRUSTED_TYPES_POLICY.createScriptURL)throw _('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');ee=e.TRUSTED_TYPES_POLICY,te=ee.createHTML("")}else void 0===ee&&(ee=$(G,c)),null!==ee&&"string"==typeof te&&(te=ee.createHTML(""));i&&i(e),ot=e}},lt=S({},["mi","mo","mn","ms","mtext"]),ct=S({},["foreignobject","desc","title","annotation-xml"]),st=S({},["title","style","font","a","script"]),ut=S({},[...x,...v,...C]),mt=S({},[...k,...O]),ft=function(e){let t=Q(e);t&&t.tagName||(t={namespaceURI:Ve,tagName:"template"});const n=p(e.tagName),o=p(t.tagName);return!!Ze[e.namespaceURI]&&(e.namespaceURI===Xe?t.namespaceURI===Ke?"svg"===n:t.namespaceURI===qe?"svg"===n&&("annotation-xml"===o||lt[o]):Boolean(ut[n]):e.namespaceURI===qe?t.namespaceURI===Ke?"math"===n:t.namespaceURI===Xe?"math"===n&&ct[o]:Boolean(mt[n]):e.namespaceURI===Ke?!(t.namespaceURI===Xe&&!ct[o])&&(!(t.namespaceURI===qe&&!lt[o])&&(!mt[n]&&(st[n]||!ut[n]))):!("application/xhtml+xml"!==Qe||!Ze[e.namespaceURI]))},pt=function(e){f(o.removed,{element:e});try{e.parentNode.removeChild(e)}catch(t){e.remove()}},dt=function(e,t){try{f(o.removed,{attribute:t.getAttributeNode(e),from:t})}catch(e){f(o.removed,{attribute:null,from:t})}if(t.removeAttribute(e),"is"===e&&!ye[e])if(Ce||ke)try{pt(t)}catch(e){}else try{t.setAttribute(e,"")}catch(e){}},ht=function(e){let t=null,n=null;if(ve)e="<remove></remove>"+e;else{const t=h(e,/^[\r\n\t ]+/);n=t&&t[0]}"application/xhtml+xml"===Qe&&Ve===Ke&&(e='<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>'+e+"</body></html>");const o=ee?ee.createHTML(e):e;if(Ve===Ke)try{t=(new W).parseFromString(o,Qe)}catch(e){}if(!t||!t.documentElement){t=ne.createDocument(Ve,"template",null);try{t.documentElement.innerHTML=$e?te:o}catch(e){}}const i=t.body||t.documentElement;return e&&n&&i.insertBefore(r.createTextNode(n),i.childNodes[0]||null),Ve===Ke?ie.call(t,Le?"html":"body")[0]:Le?t.documentElement:i},gt=function(e){return oe.call(e.ownerDocument||e,e,H.SHOW_ELEMENT|H.SHOW_COMMENT|H.SHOW_TEXT,null)},Tt=function(e){return e instanceof B&&("string"!=typeof e.nodeName||"string"!=typeof e.textContent||"function"!=typeof e.removeChild||!(e.attributes instanceof z)||"function"!=typeof e.removeAttribute||"function"!=typeof e.setAttribute||"string"!=typeof e.namespaceURI||"function"!=typeof e.insertBefore||"function"!=typeof e.hasChildNodes)},yt=function(e){return"function"==typeof N&&e instanceof N},Et=function(e,t,n){le[e]&&u(le[e],(e=>{e.call(o,t,n,ot)}))},At=function(e){let t=null;if(Et("beforeSanitizeElements",e,null),Tt(e))return pt(e),!0;const n=nt(e.nodeName);if(Et("uponSanitizeElement",e,{tagName:n,allowedTags:ge}),e.hasChildNodes()&&!yt(e.firstElementChild)&&A(/<[/\w]/g,e.innerHTML)&&A(/<[/\w]/g,e.textContent))return pt(e),!0;if(!ge[n]||_e[n]){if(!_e[n]&&bt(n)){if(Ae.tagNameCheck instanceof RegExp&&A(Ae.tagNameCheck,n))return!1;if(Ae.tagNameCheck instanceof Function&&Ae.tagNameCheck(n))return!1}if(Pe&&!ze[n]){const t=Q(e)||e.parentNode,n=J(e)||e.childNodes;if(n&&t){for(let o=n.length-1;o>=0;--o)t.insertBefore(q(n[o],!0),Z(e))}}return pt(e),!0}return e instanceof R&&!ft(e)?(pt(e),!0):"noscript"!==n&&"noembed"!==n&&"noframes"!==n||!A(/<\/no(script|embed|frames)/i,e.innerHTML)?(De&&3===e.nodeType&&(t=e.textContent,u([ce,se,ue],(e=>{t=g(t,e," ")})),e.textContent!==t&&(f(o.removed,{element:e.cloneNode()}),e.textContent=t)),Et("afterSanitizeElements",e,null),!1):(pt(e),!0)},_t=function(e,t,n){if(Ie&&("id"===t||"name"===t)&&(n in r||n in rt))return!1;if(Se&&!be[t]&&A(me,t));else if(Ne&&A(fe,t));else if(!ye[t]||be[t]){if(!(bt(e)&&(Ae.tagNameCheck instanceof RegExp&&A(Ae.tagNameCheck,e)||Ae.tagNameCheck instanceof Function&&Ae.tagNameCheck(e))&&(Ae.attributeNameCheck instanceof RegExp&&A(Ae.attributeNameCheck,t)||Ae.attributeNameCheck instanceof Function&&Ae.attributeNameCheck(t))||"is"===t&&Ae.allowCustomizedBuiltInElements&&(Ae.tagNameCheck instanceof RegExp&&A(Ae.tagNameCheck,n)||Ae.tagNameCheck instanceof Function&&Ae.tagNameCheck(n))))return!1}else if(Ye[t]);else if(A(he,g(n,de,"")));else if("src"!==t&&"xlink:href"!==t&&"href"!==t||"script"===e||0!==T(n,"data:")||!We[e]){if(Re&&!A(pe,g(n,de,"")));else if(n)return!1}else;return!0},bt=function(e){return"annotation-xml"!==e&&e.indexOf("-")>0},Nt=function(e){Et("beforeSanitizeAttributes",e,null);const{attributes:t}=e;if(!t)return;const n={attrName:"",attrValue:"",keepAttr:!0,allowedAttributes:ye};let r=t.length;for(;r--;){const i=t[r],{name:a,namespaceURI:l,value:c}=i,s=nt(a);let f="value"===a?c:y(c);if(n.attrName=s,n.attrValue=f,n.keepAttr=!0,n.forceKeepAttr=void 0,Et("uponSanitizeAttribute",e,n),f=n.attrValue,n.forceKeepAttr)continue;if(dt(a,e),!n.keepAttr)continue;if(!we&&A(/\/>/i,f)){dt(a,e);continue}De&&u([ce,se,ue],(e=>{f=g(f,e," ")}));const p=nt(e.nodeName);if(_t(p,s,f)){if(!Me||"id"!==s&&"name"!==s||(dt(a,e),f=Ue+f),ee&&"object"==typeof G&&"function"==typeof G.getAttributeType)if(l);else switch(G.getAttributeType(p,s)){case"TrustedHTML":f=ee.createHTML(f);break;case"TrustedScriptURL":f=ee.createScriptURL(f)}try{l?e.setAttributeNS(l,a,f):e.setAttribute(a,f),m(o.removed)}catch(e){}}}Et("afterSanitizeAttributes",e,null)},St=function e(t){let n=null;const o=gt(t);for(Et("beforeSanitizeShadowDOM",t,null);n=o.nextNode();)Et("uponSanitizeShadowNode",n,null),At(n)||(n.content instanceof s&&e(n.content),Nt(n));Et("afterSanitizeShadowDOM",t,null)};return o.sanitize=function(e){let t=arguments.length>1&&void 0!==arguments[1]?arguments[1]:{},n=null,r=null,i=null,l=null;if($e=!e,$e&&(e="\x3c!--\x3e"),"string"!=typeof e&&!yt(e)){if("function"!=typeof e.toString)throw _("toString is not a function");if("string"!=typeof(e=e.toString()))throw _("dirty is not a string, aborting")}if(!o.isSupported)return e;if(xe||at(t),o.removed=[],"string"==typeof e&&(Fe=!1),Fe){if(e.nodeName){const t=nt(e.nodeName);if(!ge[t]||_e[t])throw _("root node is forbidden and cannot be sanitized in-place")}}else if(e instanceof N)n=ht("\x3c!----\x3e"),r=n.ownerDocument.importNode(e,!0),1===r.nodeType&&"BODY"===r.nodeName||"HTML"===r.nodeName?n=r:n.appendChild(r);else{if(!Ce&&!De&&!Le&&-1===e.indexOf("<"))return ee&&Oe?ee.createHTML(e):e;if(n=ht(e),!n)return Ce?null:Oe?te:""}n&&ve&&pt(n.firstChild);const c=gt(Fe?e:n);for(;i=c.nextNode();)At(i)||(i.content instanceof s&&St(i.content),Nt(i));if(Fe)return e;if(Ce){if(ke)for(l=re.call(n.ownerDocument);n.firstChild;)l.appendChild(n.firstChild);else l=n;return(ye.shadowroot||ye.shadowrootmode)&&(l=ae.call(a,l,!0)),l}let m=Le?n.outerHTML:n.innerHTML;return Le&&ge["!doctype"]&&n.ownerDocument&&n.ownerDocument.doctype&&n.ownerDocument.doctype.name&&A(X,n.ownerDocument.doctype.name)&&(m="<!DOCTYPE "+n.ownerDocument.doctype.name+">\n"+m),De&&u([ce,se,ue],(e=>{m=g(m,e," ")})),ee&&Oe?ee.createHTML(m):m},o.setConfig=function(){let e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:{};at(e),xe=!0},o.clearConfig=function(){ot=null,xe=!1},o.isValidAttribute=function(e,t,n){ot||at({});const o=nt(e),r=nt(t);return _t(o,r,n)},o.addHook=function(e,t){"function"==typeof t&&(le[e]=le[e]||[],f(le[e],t))},o.removeHook=function(e){if(le[e])return m(le[e])},o.removeHooks=function(e){le[e]&&(le[e]=[])},o.removeAllHooks=function(){le={}},o}();return Z}));
+//# sourceMappingURL=purify.min.js.map
+// ===== FILE END =====
+// ===== FILE BEGIN: web-static\style.css =====
+:root {
+  font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: #111111;
+  background: #F2F3F5;
+  --primary-color: #006EFF;
+  --primary-hover: #0052D9;
+  --danger-color: #E34D59;
+  --border-color: #E5E6EB;
+  --card-bg: #FFFFFF;
+  --text-secondary: #4E5969;
+  --text-placeholder: #86909C;
+  --bg-gray: #F7F8FA;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+.container {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 16px 80px;
+}
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #111111;
+}
+.subtle {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  margin-bottom: 16px;
+  max-width: 100%;
+}
+.row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: var(--primary-color);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn:hover:not(:disabled) {
+  background: var(--primary-hover);
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn.secondary {
+  background: var(--bg-gray);
+  color: #111111;
+  border: 1px solid var(--border-color);
+}
+.btn.secondary:hover:not(:disabled) {
+  background: var(--border-color);
+}
+.panels {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+.panel-title {
+  font-weight: 600;
+  font-size: 16px;
+  margin-bottom: 12px;
+  color: #111111;
+  display: flex;
+  align-items: center;
+}
+.panel-title::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 16px;
+  background: var(--primary-color);
+  margin-right: 8px;
+  border-radius: 2px;
+}
+.pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  font-size: 14px;
+  color: #111111;
+  background: var(--bg-gray);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  max-width: 100%;
+}
+.md {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  font-size: 15px;
+  color: #333333;
+  /* 腾讯会议主题背景：浅雅的蓝灰底色 */
+  background: #F4F8FF;
+  border: 1px solid #D6E4FF;
+  border-radius: 8px;
+  padding: 16px 20px;
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-width: 100%;
+}
+.md :first-child {
+  margin-top: 0;
+}
+.md :last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5 {
+  margin: 1.5em 0 0.8em;
+  color: #111111;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.md h1 { font-size: 1.6em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
+.md h2 { font-size: 1.4em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-color); }
+.md h3 { font-size: 1.2em; }
+.md h4 { font-size: 1.1em; }
+.md p {
+  margin: 1em 0;
+}
+.md ul,
+.md ol {
+  margin: 1em 0;
+  padding-left: 2em;
+}
+.md li {
+  margin: 0.3em 0;
+}
+.md li > p {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  margin: 0.3em 0;
+}
+.md strong {
+  font-weight: 600;
+  color: #000;
+}
+.md em {
+  font-style: italic;
+}
+.md code {
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--danger-color);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.md pre {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  margin: 1em 0;
+}
+.md pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md blockquote {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-left: 4px solid var(--primary-color);
+  background: var(--bg-gray);
+  color: var(--text-secondary);
+}
+.md blockquote p {
+  margin: 0;
+}
+.md table {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  display: block;
+  overflow-x: auto;
+  word-break: normal;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border-color);
+  padding: 10px 14px;
+  vertical-align: top;
+  font-size: 14px;
+}
+.md th {
+  background: var(--bg-gray);
+  font-weight: 600;
+}
+.md a {
+  color: var(--primary-color);
+  text-decoration: none;
+}
+.md a:hover {
+  text-decoration: underline;
+}
+.md hr {
+  height: 1px;
+  padding: 0;
+  margin: 24px 0;
+  background-color: var(--border-color);
+  border: 0;
+}
+.error {
+  color: var(--danger-color);
+  background: #FFEBEB;
+  border: 1px solid #FFD1D1;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  font-size: 14px;
+}
+.hint {
+  font-size: 13px;
+  color: var(--text-placeholder);
+  margin-top: 8px;
+}
+.monitor {
+  margin-top: 16px;
+}
+.floating-ball {
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  position: fixed;
+  right: 32px;
+  bottom: 32px;
+  width: 56px;
+  height: 56px;
+  background-color: var(--primary-color);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 110, 255, 0.3);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  user-select: none;
+  z-index: 9999;
+  transition: all 0.2s ease;
+}
+.floating-ball:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 110, 255, 0.4);
+}
+.floating-ball.capturing {
+  background-color: var(--danger-color);
+  box-shadow: 0 4px 12px rgba(227, 77, 89, 0.3);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(227, 77, 89, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(227, 77, 89, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(227, 77, 89, 0);
+  }
+}
+.btn-sm {
+  appearance: none;
+  border: 1px solid var(--border-color);
+  background: var(--bg-gray);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+.btn-sm:hover:not(:disabled) {
+  background: var(--border-color);
+  color: #111;
+}
+.btn-sm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.speaker-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 6px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 10px;
+}
+.speaker-bar-label {
+  font-size: 12px;
+  color: var(--text-placeholder);
+  font-weight: 500;
+}
+.speaker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg-gray);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  font-size: 13px;
+  color: #111;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.speaker-chip:hover {
+  background: #E8F0FE;
+  border-color: #B6D4FE;
+}
+.rename-hint {
+  font-size: 10px;
+  color: var(--text-placeholder);
+  margin-left: 2px;
+}
+.speaker-input {
+  width: 80px;
+  padding: 2px 6px;
+  border: 1px solid var(--primary-color);
+  border-radius: 4px;
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+  font-size: 13px;
+  outline: none;
+  background: #fff;
+}
+.chip-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  line-height: 1;
+}
+.chip-btn:first-of-type:hover {
+  color: #07C160;
+}
+.chip-btn:last-of-type:hover {
+  color: var(--danger-color);
+}
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.profile-card {
+  position: relative;
+  background: var(--bg-gray);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.profile-card:hover {
+  background: #E8F0FE;
+  border-color: #B6D4FE;
+}
+.profile-card.active {
+  background: #E8F0FE;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 1px var(--primary-color);
+}
+.profile-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: #111;
+  margin-bottom: 4px;
+}
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+.profile-role {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.profile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #E8F0FE;
+  color: var(--primary-color);
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.profile-impression {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+.profile-meta {
+  font-size: 11px;
+  color: var(--text-placeholder);
+}
+.btn-delete-sm {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-placeholder);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+.btn-delete-sm:hover {
+  color: var(--danger-color);
+  background: #FFEBEB;
+}
+\end{Verbatim}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Program Material}
+\fancyhead[R]{}
+\begin{Verbatim}[fontsize=\footnotesize]
+.profile-detail {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 16px;
+}
+.profile-detail-header {
+  margin-bottom: 16px;
+}
+.profile-detail-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #111;
+  margin: 0;
+}
+.profile-section {
+  margin-bottom: 16px;
+}
+.profile-section h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--border-color);
+}
+// ===== FILE END =====
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+\end{Verbatim}
+\end{document}

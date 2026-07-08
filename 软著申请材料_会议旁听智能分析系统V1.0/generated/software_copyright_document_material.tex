@@ -1,0 +1,503 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[a4paper,left=2.1cm,right=2.1cm,top=1.7cm,bottom=1.7cm,includeheadfoot,headheight=15pt,headsep=10pt,footskip=16pt]{geometry}
+\usepackage{fancyhdr}
+\usepackage{fancyvrb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{fontspec}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt
+\emergencystretch = 2em
+\IfFontExistsTF{Microsoft YaHei UI}{%
+  \setmainfont{Microsoft YaHei UI}
+  \setsansfont{Microsoft YaHei UI}
+  \setmonofont{Microsoft YaHei UI}
+}{%
+  \IfFontExistsTF{Noto Serif SC}{%
+    \setmainfont{Noto Serif SC}
+    \setsansfont{Noto Serif SC}
+    \setmonofont{Noto Serif SC}
+  }{%
+    \setmainfont{Arial}
+    \setsansfont{Arial}
+    \setmonofont{Courier New}
+  }
+}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{Page \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+\setlength{\parindent}{0pt}
+\raggedbottom
+\begin{document}
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{center}\LARGE\bfseries 会议旁听智能分析系统 V1.0 软件说明书\par\end{center}
+\vspace{0.45em}
+\section*{1. 引言}
+\vspace{0.45em}
+\subsection*{1.1 编写目的}
+\vspace{0.45em}
+本说明书用于说明“会议旁听智能分析系统 V1.0”的建设目标、运行环境、总体结构、功能模块、操作流程和数据存储方式，为计算机软件著作权登记中的文档鉴别材料提供基础内容。\par
+\vspace{0.45em}
+\subsection*{1.2 软件名称}
+\vspace{0.45em}
+\begin{itemize}
+\item 软件全称：会议旁听智能分析系统
+\item 软件简称：会议旁听 Agent
+\item 版本号：V1.0
+\end{itemize}
+\vspace{0.45em}
+\subsection*{1.3 适用范围}
+\vspace{0.45em}
+本软件适用于会议内容记录、会议过程分析、同事画像构建、同事模拟对话、用户画像分析和后台会话审阅等场景。\par
+\vspace{0.45em}
+\subsection*{1.4 术语说明}
+\vspace{0.45em}
+\begin{itemize}
+\item 会议转写：将会议音频自动转换为文本。
+\item 增量分析：仅对新增会议内容执行分析，不重复处理全部历史内容。
+\item 同事画像：从会议内容中抽取的人员行为风格、技术能力和工作方式描述。
+\item 用户画像：从编号用户历史对话中抽取的用户偏好与沟通特征。
+\item Spectator：对当前对话进行旁观审查并给出建议的智能模块。
+\end{itemize}
+\vspace{0.45em}
+\section*{2. 软件建设背景}
+\vspace{0.45em}
+在会议场景中，传统记录方式往往只能保留零散文本，难以持续沉淀会议中的主题、观点、人物特征和后续跟进线索。尤其在多轮会议和跨团队协作中，用户需要的不只是“记录内容”，还包括：\par
+\vspace{0.45em}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{enumerate}
+\item 会议发生了什么
+\item 会议中每个人体现出怎样的角色与风格
+\item 会后如何继续围绕某位同事进行深入沟通
+\item 针对不同用户，如何让模拟同事的回复更贴近真实沟通偏好。
+\end{enumerate}
+\vspace{0.45em}
+本软件即围绕上述问题构建，形成一个从会议采集到人物建模再到智能对话的闭环系统。\par
+\vspace{0.45em}
+\section*{3. 软件目标}
+\vspace{0.45em}
+本软件的建设目标如下：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 采集会议过程中的音频及相关屏幕信息
+\item 将会议音频转写为结构化文本
+\item 对会议新增内容进行增量分析，减少重复计算
+\item 从会议内容中提取并构建同事画像
+\item 允许用户基于同事画像开展模拟对话
+\item 允许系统根据用户历史行为构建用户画像，并用于适配回复风格
+\item 提供后台查看编号用户、历史会话和画像数据的能力。
+\end{enumerate}
+\vspace{0.45em}
+\section*{4. 运行环境}
+\vspace{0.45em}
+\subsection*{4.1 硬件环境}
+\vspace{0.45em}
+\begin{itemize}
+\item 普通办公电脑或服务器
+\item 具备音频采集能力的终端
+\item 具备网络访问能力
+\end{itemize}
+\vspace{0.45em}
+\subsection*{4.2 软件环境}
+\vspace{0.45em}
+\begin{itemize}
+\item Windows 10/11 或 Linux
+\end{itemize}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{itemize}
+\item Node.js 18 及以上
+\item Python 3.10 及以上
+\item Chrome、Edge 等现代浏览器
+\end{itemize}
+\vspace{0.45em}
+\subsection*{4.3 开发环境}
+\vspace{0.45em}
+\begin{itemize}
+\item Visual Studio Code 或同类编辑器
+\item Git 版本管理工具
+\item Node.js 运行环境
+\item Python 运行环境
+\end{itemize}
+\vspace{0.45em}
+\section*{5. 软件总体结构}
+\vspace{0.45em}
+本软件采用前后端结合的结构：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 前端页面负责录屏控制、结果展示、画像对话和后台查询
+\item 服务端负责静态资源服务、业务接口、对话接口、画像构建和数据落盘
+\item 转写与音频处理模块负责实时转写、离线回填和音频文件处理
+\item 文件存储模块负责会话记录、画像文件和日志文件的持久化
+\item 智能分析模块负责会议增量分析、同事画像生成、用户画像生成以及对话回复。
+\end{enumerate}
+\vspace{0.45em}
+\section*{6. 功能模块说明}
+\vspace{0.45em}
+\subsection*{6.1 首页与主入口模块}
+\vspace{0.45em}
+首页提供系统总入口，可进入同事画像对话页面和编号后台页面，并展示会议旁听相关主流程入口。该模块负责用户在系统内不同页面之间的跳转。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 提供首页展示
+\end{enumerate}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{enumerate}
+\item 提供同事画像对话入口
+\item 提供编号后台入口
+\item 承载会议主流程入口。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.2 会议录制与采集模块}
+\vspace{0.45em}
+该模块负责会议过程中的内容采集，包括音频采集和相关会话过程记录。系统可在会议进行中记录必要信息，并在录制结束后触发进一步分析。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 开始录制
+\item 停止录制
+\item 生成会议音频文件
+\item 为后续转写和分析提供原始输入。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.3 实时转写模块}
+\vspace{0.45em}
+该模块负责把会议音频转写成文本。系统支持实时结果展示，也支持在结束后进行离线回填，以提高记录完整性。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 实时转写输出
+\item 转写结果追加展示
+\item 录制结束后执行离线补全
+\item 将转写结果沉淀为文本内容供分析模块继续使用。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.4 会议增量分析模块}
+\vspace{0.45em}
+该模块负责仅处理新增的会议内容，而不是每次都重复分析全部历史内容。系统可以基于新增转写和新增截图上下文，持续更新案例分析结果。\par
+\vspace{0.45em}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 识别新增文本
+\item 识别新增截图
+\item 生成增量分析结果
+\item 在会议结束时完成最终整合。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.5 同事画像构建模块}
+\vspace{0.45em}
+该模块从会议记录中构建人物画像。系统将同事画像拆分为两部分：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item Persona：性格与行为模式
+\item Work：工作能力与方法。
+\end{enumerate}
+\vspace{0.45em}
+该拆分方式有助于减少不同维度混写造成的混淆，并支持后续分别增量更新。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 新建同事画像
+\item 对已有画像执行增量更新
+\item 以文本文件方式存储画像内容
+\item 支持重命名、删除和手动新增画像。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.6 同事画像对话模块}
+\vspace{0.45em}
+该模块允许用户选择某位同事画像并进行模拟对话。系统会根据同事画像中的性格特征、表达方式和工作背景生成对应回复。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 选择画像
+\end{enumerate}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{enumerate}
+\item 流式生成模拟回复
+\item 保存会话历史
+\item 加载历史记录
+\item 在回复中体现被模拟同事的风格。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.7 用户编号与独立会话模块}
+\vspace{0.45em}
+该模块为每位用户分配唯一编号，并将不同编号下的会话历史相互隔离。这样可以让同一系统支持多个不同用户独立使用，而不会混淆其历史记录。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 分配新编号
+\item 使用已有编号登录
+\item 按编号隔离会话
+\item 为每个编号下的不同画像保存独立会话文件。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.8 用户画像分析模块}
+\vspace{0.45em}
+该模块从编号用户的全部历史对话记录中分析用户画像。分析结果包括沟通偏好、技术关注点、协作方式、决策模式、常见担忧与目标偏好。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 汇总用户全部历史发言
+\item 自动生成用户画像
+\item 将用户画像落盘保存
+\item 将用户画像反馈到模拟同事对话链路中。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.9 Spectator 建议模块}
+\vspace{0.45em}
+该模块不直接替用户回答，而是作为旁观角色审查当前对话，发现提问缺口并主动给出更高质量的追问建议。\par
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 基于当前对话生成建议
+\item 支持将建议填入输入框
+\item 支持直接发送建议
+\item 支持忽略建议。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.10 自动讨论模块}
+\vspace{0.45em}
+该模块可让模拟同事与 Spectator 进行自动讨论，对当前主题进行深入推演，并输出最终总结或进一步可执行建议。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 启动自动讨论
+\item 按轮次推进
+\item 生成讨论总结
+\item 将讨论内容纳入主会话窗口。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{6.11 后台管理模块}
+\vspace{0.45em}
+该模块面向管理和审阅场景，用于查看有哪些编号用户、各编号下有哪些画像会话，以及具体的历史消息内容和用户画像分析结果。\par
+\vspace{0.45em}
+主要功能：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 查看编号用户列表
+\item 查看各编号下的会话列表
+\item 查看完整消息记录
+\item 查看用户画像卡片
+\item 刷新用户画像分析结果。
+\end{enumerate}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\vspace{0.45em}
+\section*{7. 数据存储说明}
+\vspace{0.45em}
+\subsection*{7.1 会话存储}
+\vspace{0.45em}
+系统按编号用户存储聊天数据，每个编号用户在文件系统中拥有独立目录，并在其目录下按画像保存会话文件。\par
+\vspace{0.45em}
+\subsection*{7.2 同事画像存储}
+\vspace{0.45em}
+同事画像分为元信息、Persona 内容和 Work 内容，其中 Persona 与 Work 以文本文件形式保存，便于后续持续更新。\par
+\vspace{0.45em}
+\subsection*{7.3 用户画像存储}
+\vspace{0.45em}
+系统会将用户画像结果保存为单独的 JSON 文件，用于后续加载与对话适配。\par
+\vspace{0.45em}
+\subsection*{7.4 数据库存储设计}
+\vspace{0.45em}
+为提升后台查询效率、用户隔离管理能力和后续系统扩展性，系统在标准部署方案中设计了独立业务数据库。数据库主要负责保存结构化业务数据、检索索引和状态字段，文件系统继续负责保存长文本画像、原始会话全文、日志和鉴别材料等内容。两者配合后，可以兼顾查询性能与原始资料留存能力。\par
+\vspace{0.45em}
+数据库设计目标如下：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 保存编号用户、同事画像、会话、消息、分析任务等结构化数据
+\item 支持后台按用户编号、画像、时间范围快速检索
+\item 支持用户画像和同事画像的摘要字段管理，便于界面聚合展示
+\item 为后续统计分析、权限控制和多端接入预留统一数据接口。
+\end{enumerate}
+\vspace{0.45em}
+主要业务表设计如下：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item `chat\_users`：用于保存编号用户基础信息，包括用户编号、创建时间、最近活跃时间、状态标记等
+\item `profiles`：用于保存同事画像主记录，包括画像标识、画像名称、创建方式、所属分类、更新时间等
+\end{enumerate}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{enumerate}
+\item `conversation\_sessions`：用于保存某编号用户与某画像之间的会话主记录，包括会话编号、用户编号、画像标识、消息数、最近更新时间等
+\item `conversation\_messages`：用于保存具体消息内容，包括所属会话、消息角色、消息顺序、正文内容、时间戳等
+\item `user\_profiles`：用于保存用户画像分析结果，包括用户编号、画像摘要、偏好标签、风险关注点、更新时间等
+\item `meeting\_records`：用于保存会议分析主记录，包括会议编号、录制开始时间、结束时间、转写状态、分析状态、关联材料路径等
+\item `analysis\_jobs`：用于保存增量分析、画像更新、用户画像刷新等异步任务信息，包括任务类型、处理状态、输入摘要、输出摘要、失败原因等。
+\end{enumerate}
+\vspace{0.45em}
+数据库关系说明如下：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 一个编号用户可对应多个会话记录
+\item 一个同事画像可关联多个会话记录
+\item 一个会话记录可包含多条消息
+\item 一个编号用户对应一份主用户画像记录，但可随着历史对话持续刷新
+\item 一个会议记录可触发多项分析任务，并与画像更新结果形成关联。
+\end{enumerate}
+\vspace{0.45em}
+在实现策略上，系统采用“数据库存索引、文件存全文”的方式：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 数据库负责保存可检索字段、统计字段和界面展示所需摘要
+\item 文件系统负责保存 Persona、Work、完整会话 JSON、用户画像 JSON、日志文件和软著材料等原始内容
+\item 后台页面优先读取数据库中的结构化索引，再按需加载文件中的详细内容
+\item 当数据库与文件同时存在时，以文件中的原始记录作为审计依据，以数据库中的结构化记录作为查询入口。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{7.5 日志存储}
+\vspace{0.45em}
+系统将服务端运行日志保存到本地日志文件，便于排查问题。\par
+\vspace{0.45em}
+\section*{8. 操作流程说明}
+\vspace{0.45em}
+\subsection*{8.1 首页操作流程}
+\vspace{0.45em}
+\begin{enumerate}
+\item 用户打开系统首页
+\end{enumerate}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{enumerate}
+\item 根据需要进入同事画像对话页面或后台页面
+\item 若进行会议记录，可在首页相关区域执行录制流程。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{8.2 同事画像对话流程}
+\vspace{0.45em}
+\begin{enumerate}
+\item 用户进入同事画像对话页面
+\item 分配新编号或输入已有编号登录
+\item 在画像列表中选择目标画像
+\item 系统加载该编号下该画像的历史记录
+\item 用户输入消息并发送
+\item 系统生成流式回复
+\item 对话完成后自动保存到当前编号下。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{8.3 用户画像影响对话流程}
+\vspace{0.45em}
+\begin{enumerate}
+\item 用户使用编号持续对话
+\item 系统根据该编号的全部历史对话生成用户画像
+\item 模拟同事在后续打招呼和回复时读取用户画像
+\item 回复结构、语气和关注点向用户偏好靠拢。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{8.4 后台审阅流程}
+\vspace{0.45em}
+\begin{enumerate}
+\item 管理者进入编号后台
+\item 查看编号用户列表
+\item 选择某个编号
+\item 查看该编号下的画像会话列表
+\item 查看消息详情与用户画像分析结果。
+\end{enumerate}
+\vspace{0.45em}
+\section*{9. 软件界面说明}
+\vspace{0.45em}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\subsection*{9.1 首页界面}
+\vspace{0.45em}
+首页用于展示系统主入口，包含对话页入口、后台页入口以及会议主流程相关区域。\par
+\vspace{0.45em}
+\subsection*{9.2 对话界面}
+\vspace{0.45em}
+对话界面主要包括：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 左侧画像列表
+\item 中间主对话窗口
+\item 右侧建议和总结区域
+\item 顶部编号用户登录与分配区域。
+\end{enumerate}
+\vspace{0.45em}
+\subsection*{9.3 后台界面}
+\vspace{0.45em}
+后台界面主要包括：\par
+\vspace{0.45em}
+\begin{enumerate}
+\item 编号用户列表
+\item 画像会话列表
+\item 对话记录查看区域
+\item 用户画像折叠卡片。
+\end{enumerate}
+\vspace{0.45em}
+\section*{10. 软件安全与稳定性说明}
+\vspace{0.45em}
+本软件采用文件落盘方式保存关键数据，并通过增量更新、结构化存储和后台查询机制降低记录丢失风险。对于删除画像等重要操作，系统采用二次确认，避免误操作造成关键数据丢失。\par
+\vspace{0.45em}
+\section*{11. 软件特点}
+\vspace{0.45em}
+\begin{enumerate}
+\item 将会议采集、转写、分析、画像和对话整合到一个系统中
+\item 支持人物画像双结构建模
+\end{enumerate}
+\newpage
+\fancyhead[L]{Meeting Observer Analysis System V1.0 Document Material}
+\fancyhead[R]{}
+\begin{enumerate}
+\item 支持按编号用户独立隔离会话
+\item 支持从用户历史行为中反向构建用户画像
+\item 支持用用户画像影响模拟同事的回复策略
+\item 支持后台可视化审阅。
+\end{enumerate}
+\vspace{0.45em}
+\section*{12. 结论}
+\vspace{0.45em}
+会议旁听智能分析系统 V1.0 通过会议内容采集、语音转写、增量分析、同事画像构建、模拟对话、用户画像分析和后台管理等功能，形成一套完整的会议智能辅助软件体系，具有明确的软件结构、稳定的业务闭环和较强的应用价值。\par
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\vspace{0.45em}
+\end{document}

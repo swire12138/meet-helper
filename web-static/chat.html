@@ -16,9 +16,10 @@
       body { background:#F2F3F5; }
       #app.container { width:100vw; max-width:none; height:100vh; margin:0; padding:12px; display:flex; flex-direction:column; overflow:hidden; }
       .header { flex:0 0 auto; margin-bottom:12px; }
-      .chat-layout { flex:1; min-height:0; display:grid; grid-template-columns:248px minmax(0,1fr) 340px; gap:14px; }
+      .header-actions { display:flex; gap:10px; align-items:center; }
+      .chat-layout { flex:1; min-height:0; display:grid; grid-template-columns:280px minmax(0,1fr) 340px; gap:14px; }
       .chat-sidebar,.chat-main,.spectator-panel { background:var(--card-bg); border:1px solid var(--border-color); border-radius:12px; min-height:0; }
-      .chat-sidebar { padding:14px; overflow-y:auto; }
+      .chat-sidebar { padding:14px; overflow-y:auto; display:flex; flex-direction:column; gap:14px; }
       .chat-main { display:flex; flex-direction:column; overflow:hidden; }
       .spectator-panel { padding:12px; display:flex; flex-direction:column; gap:12px; overflow:hidden; }
       .chat-header,.chat-input-area { padding:12px 14px; }
@@ -31,20 +32,20 @@
       .message-avatar { width:36px; height:36px; border-radius:50%; background:var(--primary-color); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; flex-shrink:0; }
       .message.user .message-avatar { background:#5B6475; }
       .message.spectator .message-avatar { background:#7C4DFF; }
-      .message-bubble { background:var(--bg-gray); border:1px solid var(--border-color); border-radius:12px; padding:10px 14px; line-height:1.55; }
+      .message-bubble { background:var(--bg-gray); border:1px solid var(--border-color); border-radius:12px; padding:10px 14px; line-height:1.55; overflow:visible; }
       .message.user .message-bubble { background:#E8F0FE; border-color:#B6D4FE; }
       .message.spectator .message-bubble { background:#F4EEFF; border-color:#D9C9FF; }
       .message-content { font-size:13px; word-break:break-word; white-space:pre-wrap; }
-      .message-bubble { overflow:visible; }
       .message-content.md { background:transparent; border:none; padding:0; max-height:none !important; overflow:visible !important; }
       .message-label { font-size:12px; color:var(--text-secondary); margin-bottom:6px; }
       .chat-toolbar { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:10px; margin-top:8px; }
-      .toolbar-actions,.suggestion-actions { display:flex; gap:6px; flex-wrap:wrap; }
+      .toolbar-actions,.suggestion-actions,.login-actions { display:flex; gap:6px; flex-wrap:wrap; }
       .chat-input-wrapper { display:flex; gap:12px; align-items:flex-end; }
       .chat-input { flex:1; min-height:68px; max-height:160px; resize:vertical; padding:10px 12px; border:1px solid var(--border-color); border-radius:10px; font-size:13px; font-family:inherit; outline:none; }
-      .chat-input:focus { border-color:var(--primary-color); }
+      .chat-input:focus,.plain-input:focus { border-color:var(--primary-color); }
+      .plain-input { width:100%; padding:9px 10px; border:1px solid var(--border-color); border-radius:10px; font-size:13px; outline:none; background:#fff; }
       .profile-select-list,.suggestion-list { display:flex; flex-direction:column; gap:10px; }
-      .profile-select-card,.suggestion-card { background:var(--bg-gray); border:1px solid var(--border-color); border-radius:10px; padding:10px; }
+      .profile-select-card,.suggestion-card,.user-card { background:var(--bg-gray); border:1px solid var(--border-color); border-radius:10px; padding:10px; }
       .profile-select-card { cursor:pointer; transition:all .15s ease; }
       .profile-select-card:hover,.suggestion-card:hover { border-color:#B6D4FE; }
       .profile-select-card.active { background:#E8F0FE; border-color:var(--primary-color); box-shadow:0 0 0 1px var(--primary-color); }
@@ -55,7 +56,7 @@
       .panel-section { min-height:0; }
       .panel-section.suggestions-section { flex:1; display:flex; flex-direction:column; overflow:hidden; }
       .section-header { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
-      .spectator-status { padding:8px 10px; border-radius:10px; background:#F6F8FA; border:1px solid var(--border-color); font-size:12px; color:var(--text-secondary); }
+      .spectator-status,.status-card { padding:8px 10px; border-radius:10px; background:#F6F8FA; border:1px solid var(--border-color); font-size:12px; color:var(--text-secondary); }
       .empty-state { flex:1; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--text-placeholder); padding:40px; }
       .typing-indicator { display:inline-flex; gap:4px; padding:8px 12px; }
       .typing-dot { width:8px; height:8px; background:var(--text-placeholder); border-radius:50%; animation:typing 1.4s infinite; }
@@ -65,11 +66,18 @@
       .suggestion-scroll { flex:1; min-height:0; overflow-y:auto; padding-right:2px; }
       .report-box { max-height:150px; overflow-y:auto; background:#FAFBFC; border:1px solid var(--border-color); border-radius:10px; padding:10px; }
       .profile-summary { display:flex; flex-direction:column; gap:2px; min-width:0; }
-      .chat-meta { display:flex; align-items:center; gap:8px; white-space:nowrap; }
+      .chat-meta { display:flex; align-items:center; gap:8px; white-space:nowrap; flex-wrap:wrap; justify-content:flex-end; }
       .compact-badge { display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; background:#F3F4F6; color:var(--text-secondary); font-size:12px; }
       .btn.secondary,.btn { padding:7px 12px; }
+      .sidebar-section-title { font-weight:600; font-size:13px; margin-bottom:8px; }
+      .user-id { font-size:18px; font-weight:700; letter-spacing:0.06em; }
+      .user-login-box { display:flex; flex-direction:column; gap:8px; }
       @keyframes typing { 0%,60%,100% { transform:translateY(0); opacity:.4; } 30% { transform:translateY(-4px); opacity:1; } }
-      @media (max-width:1200px) { .chat-layout { grid-template-columns:220px 1fr; } .spectator-panel { grid-column:1 / -1; max-height:none; } .chat-toolbar { grid-template-columns:1fr; } }
+      @media (max-width:1280px) {
+        .chat-layout { grid-template-columns:240px 1fr; }
+        .spectator-panel { grid-column:1 / -1; max-height:none; }
+        .chat-toolbar { grid-template-columns:1fr; }
+      }
     </style>
   </head>
   <body>
@@ -77,20 +85,46 @@
       <div class="header">
         <div>
           <div class="title">同事画像对话</div>
-          <div class="subtle">支持直接与模拟同事对话，并让 Spectator 主动提示与自动讨论</div>
+          <div class="subtle">按编号用户隔离会话，每个编号都拥有独立的同事画像对话记录</div>
         </div>
-        <a href="/" class="btn secondary">返回首页</a>
+        <div class="header-actions">
+          <a href="/chat-admin.html" class="btn secondary">编号后台</a>
+          <a href="/" class="btn secondary">返回首页</a>
+        </div>
       </div>
 
       <div class="chat-layout">
         <div class="chat-sidebar">
-          <div class="panel-title">选择同事</div>
-          <div v-if="profiles.length === 0" class="hint">暂无同事画像</div>
-          <div v-else class="profile-select-list">
-            <div v-for="profile in profiles" :key="profile.slug" :class="['profile-select-card', { active: selectedSlug === profile.slug }]" @click="selectProfile(profile.slug)">
-              <div class="profile-select-name">{{ profile.name }}</div>
-              <div class="profile-select-role">{{ profile.role || '未知职位' }}</div>
-              <div class="hint" style="margin-top:6px;">{{ profile.impression || '' }}</div>
+          <div class="user-card">
+            <div class="sidebar-section-title">编号用户</div>
+            <div v-if="chatUserId">
+              <div class="user-id">{{ chatUserId }}</div>
+              <div class="card-meta" style="margin-top:6px;">当前编号下的每位同事画像对话都彼此独立</div>
+              <div class="login-actions" style="margin-top:10px;">
+                <button class="btn secondary" @click="allocateChatUser" :disabled="loginLoading">分配新编号</button>
+                <button class="btn secondary" @click="logoutChatUser" :disabled="loginLoading || autopilotRunning">退出编号</button>
+              </div>
+            </div>
+            <div v-else class="user-login-box">
+              <div class="hint">先分配或输入一个 10 位编号，再进入对应的独立对话记录。</div>
+              <button class="btn" @click="allocateChatUser" :disabled="loginLoading">{{ loginLoading ? "分配中..." : "分配新编号" }}</button>
+              <input v-model.trim="loginInput" class="plain-input" maxlength="10" placeholder="输入 10 位编号" @keydown.enter.prevent="loginChatUser" />
+              <div class="login-actions">
+                <button class="btn secondary" @click="loginChatUser" :disabled="loginLoading || loginInput.length !== 10">登录已有编号</button>
+              </div>
+            </div>
+            <div class="card-meta" v-if="loginStatus" style="margin-top:8px;">{{ loginStatus }}</div>
+          </div>
+
+          <div>
+            <div class="sidebar-section-title">选择同事</div>
+            <div v-if="profiles.length === 0" class="hint">暂无同事画像</div>
+            <div v-else class="profile-select-list">
+              <div v-for="profile in profiles" :key="profile.slug" :class="['profile-select-card', { active: selectedSlug === profile.slug }]" @click="selectProfile(profile.slug)">
+                <div class="profile-select-name">{{ profile.name }}</div>
+                <div class="profile-select-role">{{ profile.role || '未知职位' }}</div>
+                <div class="hint" style="margin-top:6px;">{{ profile.impression || '' }}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -104,26 +138,30 @@
                   <div class="subtle">{{ selectedProfile.role || '暂无职位信息' }}</div>
                 </div>
                 <div class="chat-meta">
+                  <div class="compact-badge">编号 {{ chatUserId || '未登录' }}</div>
                   <div class="compact-badge">消息 {{ messages.length }}</div>
                   <div class="compact-badge">{{ pendingSuggestions.length }} 条建议</div>
                 </div>
               </div>
               <div class="chat-toolbar">
                 <div class="toolbar-actions">
-                  <button class="btn secondary" :disabled="!selectedProfile || spectatorLoading || autopilotRunning" @click="requestSpectatorSuggestion(true)">获取建议</button>
-                  <button class="btn secondary" :disabled="!selectedProfile || autopilotRunning" @click="startAutopilot('normal')">自动讨论</button>
-                  <button class="btn secondary" :disabled="!selectedProfile || autopilotRunning" @click="startAutopilot('deep')">深入讨论</button>
+                  <button class="btn secondary" :disabled="!canInteract || spectatorLoading || autopilotRunning" @click="requestSpectatorSuggestion(true)">获取建议</button>
+                  <button class="btn secondary" :disabled="!canInteract || autopilotRunning" @click="startAutopilot('normal')">自动讨论</button>
+                  <button class="btn secondary" :disabled="!canInteract || autopilotRunning" @click="startAutopilot('deep')">深入讨论</button>
                   <button class="btn secondary" :disabled="!autopilotRunning" @click="requestAutopilotStop">停止并总结</button>
                 </div>
+                <div class="status-card">{{ conversationStatus }}</div>
               </div>
             </div>
             <div v-else class="subtle">请先在左侧选择一位同事</div>
           </div>
 
           <div class="chat-messages" ref="messagesRef">
-            <div v-if="!selectedProfile" class="empty-state">选择左侧的同事画像开始对话</div>
-            <div v-else-if="messages.length === 0" class="empty-state">你好，我是 {{ selectedProfile.name }}。你可以直接和我聊，也可以让 Spectator 帮你推进这段对话。</div>
-            <div v-for="msg in messages" :key="msg.id" :class="['message', messageClass(msg)]">
+            <div v-if="!chatUserId" class="empty-state">先分配或登录一个编号用户，再进入该编号的独立聊天记录。</div>
+            <div v-else-if="!selectedProfile" class="empty-state">选择左侧的同事画像开始对话</div>
+            <div v-else-if="loadingConversation" class="empty-state">正在加载当前编号下的历史对话...</div>
+            <div v-else-if="messages.length === 0" class="empty-state">你好，我是 {{ selectedProfile.name }}。当前编号 {{ chatUserId }} 下还没有这位同事的历史记录，可以直接开始对话。</div>
+            <div v-for="msg in messages" :key="msg.id || `${msg.role}-${msg.content.slice(0, 16)}`" :class="['message', messageClass(msg)]">
               <div class="message-avatar">{{ messageAvatar(msg) }}</div>
               <div class="message-bubble">
                 <div v-if="msg.label && msg.role !== 'user'" class="message-label">{{ msg.label }}</div>
@@ -131,7 +169,7 @@
                 <div v-else class="message-content md" v-html="renderMarkdown(msg.content)"></div>
               </div>
             </div>
-            <div v-if="isTyping" class="message assistant">
+            <div v-if="isTyping && selectedProfile" class="message assistant">
               <div class="message-avatar">{{ selectedProfile.name.charAt(0) }}</div>
               <div class="message-bubble">
                 <div class="typing-indicator">
@@ -145,8 +183,8 @@
 
           <div class="chat-input-area">
             <div class="chat-input-wrapper">
-              <textarea ref="inputRef" v-model="inputText" class="chat-input" placeholder="输入消息..." :disabled="!selectedProfile || isTyping" @keydown="onKeyDown"></textarea>
-              <button class="btn" :disabled="!selectedProfile || !inputText.trim() || isTyping" @click="sendMessage">发送</button>
+              <textarea ref="inputRef" v-model="inputText" class="chat-input" placeholder="输入消息..." :disabled="!canInteract || isTyping || loadingConversation" @keydown="onKeyDown"></textarea>
+              <button class="btn" :disabled="!canInteract || !inputText.trim() || isTyping || loadingConversation" @click="sendMessage">发送</button>
             </div>
           </div>
         </div>
@@ -186,9 +224,11 @@
 
     <script>
       const { createApp, ref, computed, nextTick, watch } = Vue;
+      const ACTIVE_CHAT_USER_KEY = "meet-helper.active.chat.user";
 
       createApp({
         setup() {
+          const initialSlug = new URLSearchParams(window.location.search).get("slug");
           const profiles = ref([]);
           const selectedSlug = ref(null);
           const messages = ref([]);
@@ -206,10 +246,17 @@
           const autopilotStatus = ref("尚未开始自动讨论");
           const autopilotRound = ref(0);
           const autopilotStopRequested = ref(false);
+          const chatUserId = ref("");
+          const loginInput = ref("");
+          const loginLoading = ref(false);
+          const loginStatus = ref("未登录编号用户");
+          const conversationStatus = ref("请选择编号并开始对话。");
+          const loadingConversation = ref(false);
           let suggestionTimer = null;
           let autopilotToken = 0;
 
           const selectedProfile = computed(() => profiles.value.find((p) => p.slug === selectedSlug.value) || null);
+          const canInteract = computed(() => Boolean(chatUserId.value && selectedSlug.value));
 
           function newId(prefix) {
             return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -229,6 +276,16 @@
             if (msg.role === "user") return "我";
             if (msg.role === "spectator") return "S";
             return selectedProfile.value ? selectedProfile.value.name.charAt(0) : "AI";
+          }
+
+          function updateUrlSlug(slug) {
+            const url = new URL(window.location.href);
+            if (slug) {
+              url.searchParams.set("slug", slug);
+            } else {
+              url.searchParams.delete("slug");
+            }
+            history.replaceState(null, "", url.toString());
           }
 
           function scrollToBottom() {
@@ -252,37 +309,185 @@
             }
           }
 
-          function clearAutopilot() {
+          function resetTransientState() {
+            isTyping.value = false;
+            pendingSuggestions.value = [];
+            spectatorStatus.value = "Spectator 会在合适时机主动提示。";
+            autopilotRunning.value = false;
+            autopilotMode.value = "normal";
             autopilotTranscript.value = [];
-            autopilotReport.value = "";
-            autopilotRound.value = 0;
             autopilotStatus.value = "尚未开始自动讨论";
+            autopilotRound.value = 0;
             autopilotStopRequested.value = false;
           }
 
-          function resetConversationState() {
+          function clearConversationState() {
             messages.value = [];
             inputText.value = "";
-            pendingSuggestions.value = [];
-            spectatorStatus.value = "Spectator 会在合适时机主动提示。";
-            clearAutopilot();
+            autopilotReport.value = "";
+            resetTransientState();
           }
 
           async function loadProfiles() {
             try {
               const res = await fetch("/api/profiles");
               const data = await res.json();
-              if (data.ok) profiles.value = data.data;
+              if (!data.ok) return;
+              profiles.value = data.data || [];
+              if (!selectedSlug.value && profiles.value.length > 0) {
+                const preferred = profiles.value.find((item) => item.slug === initialSlug);
+                selectedSlug.value = preferred ? preferred.slug : profiles.value[0].slug;
+                updateUrlSlug(selectedSlug.value);
+              }
             } catch (e) {
               console.error("Failed to load profiles:", e);
             }
           }
 
-          function selectProfile(slug) {
-            if (autopilotRunning.value) return;
-            selectedSlug.value = slug;
+          async function loadConversation() {
+            if (!chatUserId.value || !selectedSlug.value) {
+              clearConversationState();
+              return;
+            }
             resetSuggestionTimer();
-            resetConversationState();
+            loadingConversation.value = true;
+            resetTransientState();
+            inputText.value = "";
+            conversationStatus.value = `正在加载编号 ${chatUserId.value} 的独立记录...`;
+            try {
+              const res = await fetch(`/api/chat-users/${encodeURIComponent(chatUserId.value)}/conversations/${encodeURIComponent(selectedSlug.value)}`);
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              messages.value = Array.isArray(data.data.messages) ? data.data.messages : [];
+              autopilotReport.value = data.data.autopilotReport || "";
+              conversationStatus.value = messages.value.length > 0 ? "已加载该编号下的历史记录。" : "当前编号下还没有这位同事的历史记录。";
+              scrollToBottom();
+            } catch (e) {
+              console.error("Load conversation error:", e);
+              messages.value = [];
+              autopilotReport.value = "";
+              conversationStatus.value = `加载历史失败：${e.message || "network_error"}`;
+            } finally {
+              loadingConversation.value = false;
+            }
+          }
+
+          async function persistConversationState() {
+            if (!chatUserId.value || !selectedSlug.value || !selectedProfile.value) return;
+            try {
+              await fetch(`/api/chat-users/${encodeURIComponent(chatUserId.value)}/conversations/${encodeURIComponent(selectedSlug.value)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  profileName: selectedProfile.value.name || "",
+                  messages: messages.value,
+                  autopilotReport: autopilotReport.value
+                })
+              });
+            } catch (e) {
+              console.error("Persist conversation error:", e);
+            }
+          }
+
+          function setActiveUser(userId) {
+            chatUserId.value = userId;
+            loginInput.value = userId;
+            if (userId) {
+              localStorage.setItem(ACTIVE_CHAT_USER_KEY, userId);
+              loginStatus.value = `当前编号：${userId}`;
+            } else {
+              localStorage.removeItem(ACTIVE_CHAT_USER_KEY);
+              loginStatus.value = "未登录编号用户";
+            }
+          }
+
+          async function allocateChatUser() {
+            if (loginLoading.value) return;
+            loginLoading.value = true;
+            loginStatus.value = "正在分配新编号...";
+            try {
+              const res = await fetch("/api/chat-users/allocate", { method: "POST" });
+              const data = await res.json();
+              if (!res.ok || !data.ok || !data.data?.userId) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              setActiveUser(data.data.userId);
+              conversationStatus.value = "已分配新编号，正在载入对应会话。";
+              await loadConversation();
+            } catch (e) {
+              console.error("Allocate chat user error:", e);
+              loginStatus.value = `分配失败：${e.message || "network_error"}`;
+            } finally {
+              loginLoading.value = false;
+            }
+          }
+
+          async function loginChatUser() {
+            if (loginLoading.value) return;
+            const userId = loginInput.value.trim();
+            if (!/^\d{10}$/.test(userId)) {
+              loginStatus.value = "请输入 10 位编号。";
+              return;
+            }
+            loginLoading.value = true;
+            loginStatus.value = "正在登录编号用户...";
+            try {
+              const res = await fetch("/api/chat-users/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ userId })
+              });
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.message || data.error || `http_${res.status}`);
+              }
+              setActiveUser(userId);
+              conversationStatus.value = "编号登录成功，正在载入对应会话。";
+              await loadConversation();
+            } catch (e) {
+              console.error("Chat user login error:", e);
+              loginStatus.value = `登录失败：${e.message || "network_error"}`;
+            } finally {
+              loginLoading.value = false;
+            }
+          }
+
+          function logoutChatUser() {
+            if (autopilotRunning.value) return;
+            setActiveUser("");
+            clearConversationState();
+            conversationStatus.value = "已退出编号用户。";
+          }
+
+          async function restoreActiveUser() {
+            const stored = localStorage.getItem(ACTIVE_CHAT_USER_KEY);
+            if (!stored || !/^\d{10}$/.test(stored)) return;
+            loginInput.value = stored;
+            try {
+              const res = await fetch("/api/chat-users/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ userId: stored })
+              });
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                localStorage.removeItem(ACTIVE_CHAT_USER_KEY);
+                return;
+              }
+              setActiveUser(stored);
+              await loadConversation();
+            } catch (e) {
+              console.error("Restore active user error:", e);
+            }
+          }
+
+          async function selectProfile(slug) {
+            if (autopilotRunning.value || selectedSlug.value === slug) return;
+            selectedSlug.value = slug;
+            updateUrlSlug(slug);
+            await loadConversation();
           }
 
           function dismissSuggestion(id) {
@@ -321,16 +526,22 @@
                 if (data.delta) onDelta(data.delta);
               }
             }
+            if (buffer.trim()) {
+              const data = JSON.parse(buffer);
+              if (!data.ok) throw new Error(data.message || data.error || "unknown_error");
+              if (data.delta) onDelta(data.delta);
+            }
           }
 
           async function sendMessage() {
-            if (!selectedSlug.value || !inputText.value.trim() || isTyping.value) return;
+            if (!canInteract.value || !inputText.value.trim() || isTyping.value) return;
             const userText = inputText.value.trim();
             inputText.value = "";
             messages.value.push({ id: newId("msg"), role: "user", content: userText });
             scrollToBottom();
             pendingSuggestions.value = [];
             spectatorStatus.value = "等待模拟同事回复后再判断是否需要介入。";
+            conversationStatus.value = "正在生成回复...";
 
             const assistantMessage = { id: newId("msg"), role: "assistant", content: "", label: selectedProfile.value ? selectedProfile.value.name : "" };
             isTyping.value = true;
@@ -344,25 +555,28 @@
               const res = await fetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ slug: selectedSlug.value, messages: history })
+                body: JSON.stringify({ slug: selectedSlug.value, messages: history, chatUserId: chatUserId.value })
               });
               if (!res.ok) throw new Error(`http_${res.status}`);
               await consumeNdjsonResponse(res, (delta) => {
                 assistantMessage.content += delta;
                 scrollToBottom();
               });
+              await persistConversationState();
               spectatorStatus.value = "可继续对话，或让 Spectator 帮你推进。";
+              conversationStatus.value = "本轮回复已保存到当前编号。";
               scheduleSpectatorSuggestion(false);
             } catch (e) {
               console.error("Chat error:", e);
               assistantMessage.content = `抱歉，发生了错误：${e.message || "network error"}`;
+              conversationStatus.value = `发送失败：${e.message || "network_error"}`;
             } finally {
               isTyping.value = false;
             }
           }
 
           async function requestSpectatorSuggestion(manual = false) {
-            if (!selectedSlug.value || spectatorLoading.value || autopilotRunning.value) return;
+            if (!canInteract.value || spectatorLoading.value || autopilotRunning.value) return;
             if (!manual && pendingSuggestions.value.length >= 2) return;
             spectatorLoading.value = true;
             spectatorStatus.value = manual ? "Spectator 正在生成建议..." : "Spectator 正在观察当前对话...";
@@ -410,7 +624,7 @@
 
           function scheduleSpectatorSuggestion(manual = false) {
             resetSuggestionTimer();
-            if (!selectedSlug.value || autopilotRunning.value) return;
+            if (!canInteract.value || autopilotRunning.value) return;
             if (manual) {
               requestSpectatorSuggestion(true);
               return;
@@ -494,6 +708,7 @@
             }
 
             item.streaming = false;
+            await persistConversationState();
             if (token !== autopilotToken) throw new Error("autopilot_cancelled");
             return { shouldEnd };
           }
@@ -528,11 +743,12 @@
               reportMessage.content = buffer;
               scrollToBottom();
             });
+            await persistConversationState();
             if (token === autopilotToken) autopilotStatus.value = "自动讨论已完成。";
           }
 
           async function startAutopilot(mode) {
-            if (!selectedSlug.value || autopilotRunning.value) return;
+            if (!canInteract.value || autopilotRunning.value) return;
             autopilotToken += 1;
             const token = autopilotToken;
             autopilotRunning.value = true;
@@ -542,6 +758,7 @@
             autopilotRound.value = 0;
             autopilotStopRequested.value = false;
             spectatorStatus.value = "自动讨论已启动，暂时暂停旁观建议。";
+            conversationStatus.value = "自动讨论进行中...";
 
             let nextSpeaker = "main";
             try {
@@ -561,6 +778,7 @@
               if (e.message !== "autopilot_cancelled") {
                 console.error("Autopilot error:", e);
                 autopilotStatus.value = `自动讨论失败：${e.message || "unknown_error"}`;
+                conversationStatus.value = `自动讨论失败：${e.message || "unknown_error"}`;
               }
             } finally {
               if (token === autopilotToken) {
@@ -570,6 +788,9 @@
                   autopilotStatus.value = "自动讨论已结束。";
                 }
                 spectatorStatus.value = "自动讨论结束，Spectator 已恢复旁观。";
+                if (!conversationStatus.value.includes("失败")) {
+                  conversationStatus.value = "自动讨论结果已保存到当前编号。";
+                }
               }
             }
           }
@@ -588,12 +809,15 @@
           }
 
           watch(inputText, (value) => {
-            if (!selectedSlug.value || isTyping.value || autopilotRunning.value) return;
+            if (!canInteract.value || isTyping.value || autopilotRunning.value) return;
             if (!value.trim()) return;
             scheduleSpectatorSuggestion(false);
           });
 
-          loadProfiles();
+          (async () => {
+            await loadProfiles();
+            await restoreActiveUser();
+          })();
 
           return {
             profiles,
@@ -608,12 +832,23 @@
             spectatorLoading,
             spectatorStatus,
             autopilotRunning,
-            autopilotTranscript,
             autopilotReport,
             autopilotStatus,
             autopilotRound,
-            selectProfile,
+            chatUserId,
+            loginInput,
+            loginLoading,
+            loginStatus,
+            conversationStatus,
+            loadingConversation,
+            canInteract,
             renderMarkdown,
+            messageClass,
+            messageAvatar,
+            selectProfile,
+            allocateChatUser,
+            loginChatUser,
+            logoutChatUser,
             sendMessage,
             onKeyDown,
             requestSpectatorSuggestion,
@@ -621,10 +856,7 @@
             applySuggestion,
             sendSuggestionNow,
             startAutopilot,
-            requestAutopilotStop,
-            clearAutopilot,
-            messageClass,
-            messageAvatar
+            requestAutopilotStop
           };
         }
       }).mount("#app");
