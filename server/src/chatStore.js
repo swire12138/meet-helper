@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeTemporaryPreferenceData } from "./sessionPreferences.js";
 
 function getChatUsersRoot() {
   return path.resolve(process.cwd(), "..", "screen-catch", "data", "chat-users");
@@ -164,7 +165,11 @@ export function getChatUser(userId) {
   return readJson(getUserMetaPath(normalizedUserId), null);
 }
 
-export function saveConversationState(userId, slug, { profileName = "", messages = [], autopilotReport = "" } = {}) {
+export function saveConversationState(
+  userId,
+  slug,
+  { profileName = "", messages = [], autopilotReport = "", temporaryPreferences = null } = {}
+) {
   const ensured = ensureChatUser(userId);
   if (!ensured.ok) return ensured;
 
@@ -183,7 +188,10 @@ export function saveConversationState(userId, slug, { profileName = "", messages
     createdAt: existing?.createdAt || now,
     updatedAt: now,
     messages: sanitizeStoredMessages(messages),
-    autopilotReport: typeof autopilotReport === "string" ? autopilotReport : ""
+    autopilotReport: typeof autopilotReport === "string" ? autopilotReport : "",
+    temporaryPreferences: normalizeTemporaryPreferenceData(
+      temporaryPreferences ?? existing?.temporaryPreferences
+    )
   };
   writeJson(filePath, conversation);
 
@@ -214,7 +222,8 @@ export function loadConversationState(userId, slug) {
         createdAt: "",
         updatedAt: "",
         messages: [],
-        autopilotReport: ""
+        autopilotReport: "",
+        temporaryPreferences: normalizeTemporaryPreferenceData(null)
       }
     };
   }
@@ -223,7 +232,8 @@ export function loadConversationState(userId, slug) {
     data: {
       ...conversation,
       messages: sanitizeStoredMessages(conversation.messages),
-      autopilotReport: typeof conversation.autopilotReport === "string" ? conversation.autopilotReport : ""
+      autopilotReport: typeof conversation.autopilotReport === "string" ? conversation.autopilotReport : "",
+      temporaryPreferences: normalizeTemporaryPreferenceData(conversation.temporaryPreferences)
     }
   };
 }

@@ -91,7 +91,7 @@ function extractAllSpeakers(transcriptText) {
 
 async function completeProfileJson(messages) {
   const client = createQwenClient();
-  const { model, enableThinking, maxTokens } = getQwenConfig();
+  const { model, maxTokens } = getQwenConfig();
 
   const resp = await client.chat.completions.create({
     model,
@@ -99,7 +99,7 @@ async function completeProfileJson(messages) {
     temperature: 0.2,
     max_tokens: Math.max(maxTokens, 8192),
     response_format: { type: "json_object" },
-    extra_body: { enable_thinking: enableThinking }
+    extra_body: { enable_thinking: false }
   });
 
   const content = resp.choices?.[0]?.message?.content ?? "";

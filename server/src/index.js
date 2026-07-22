@@ -34,6 +34,12 @@ import {
 import { getOrBuildUserProfile, loadStoredUserProfile } from "./userProfile.js";
 import { buildChatSystemPrompt } from "./profilePrompts.js";
 import { extractLikelyJsonObject, safeJsonParse } from "./json.js";
+import {
+  clearTemporaryPreferenceData,
+  normalizeTemporaryPreferenceData,
+  removeTemporaryPreferenceItem
+} from "./sessionPreferences.js";
+import { detectMeetingAdviceTrigger, generateMeetingAdvice } from "./meetingAdvisor.js";
 
 // 配置日志同时输出到文件
 const logPath = path.resolve(process.cwd(), "../../screen-catch", "data", "server.log");
@@ -120,6 +126,41 @@ function parseJsonContent(raw) {
   if (parsed.ok) return parsed;
   const cleaned = raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
   return safeJsonParse(extractLikelyJsonObject(cleaned) ?? cleaned);
+}
+
+function normalizeTranscriptLineArray(value, limit = 12) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(-limit);
+}
+
+function buildAdviceDigest(value) {
+  if (!Array.isArray(value) || value.length === 0) return "";
+  return value
+    .slice(-5)
+    .map((item, idx) => {
+      const title = typeof item?.title === "string" ? item.title.trim() : "";
+      const summary = typeof item?.summary === "string" ? item.summary.trim() : "";
+      return `${idx + 1}. ${title || "未命名建议"}${summary ? `：${summary}` : ""}`;
+    })
+    .join("\n");
+}
+
+function normalizeWebContext(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const title = typeof item.title === "string" ? item.title.trim() : "";
+      const snippet = typeof item.snippet === "string" ? item.snippet.trim() : "";
+      const url = typeof item.url === "string" ? item.url.trim() : "";
+      if (!title && !snippet && !url) return null;
+      return { title, snippet, url };
+    })
+    .filter(Boolean)
+    .slice(0, 5);
 }
 
 async function completeJsonObject(messages, { temperature = 0.2, maxTokens } = {}) {
@@ -603,11 +644,19 @@ app.get("/api/chat-users/:userId/conversations/:slug", (req, res) => {
 
 app.post("/api/chat-users/:userId/conversations/:slug", (req, res) => {
   try {
-    const { profileName = "", messages = [], autopilotReport = "" } = req.body || {};
+    const {
+      profileName = "",
+      messages = [],
+      autopilotReport = "",
+      temporaryPreferences
+    } = req.body || {};
     const result = saveConversationState(req.params.userId, req.params.slug, {
       profileName,
       messages: normalizeConversationMessages(messages),
-      autopilotReport
+      autopilotReport,
+      temporaryPreferences: temporaryPreferences === undefined
+        ? undefined
+        : normalizeTemporaryPreferenceData(temporaryPreferences)
     });
     if (!result.ok) {
       return res.status(result.error === "invalid_user_id" ? 400 : 404).json(result);
@@ -615,6 +664,57 @@ app.post("/api/chat-users/:userId/conversations/:slug", (req, res) => {
     res.json(result);
   } catch (e) {
     console.error("Save conversation state error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/chat-users/:userId/conversations/:slug/temporary-preferences/clear", (req, res) => {
+  try {
+    const loaded = loadConversationState(req.params.userId, req.params.slug);
+    if (!loaded.ok) {
+      return res.status(400).json(loaded);
+    }
+
+    const saved = saveConversationState(req.params.userId, req.params.slug, {
+      profileName: loaded.data.profileName || "",
+      messages: normalizeConversationMessages(loaded.data.messages),
+      autopilotReport: loaded.data.autopilotReport || "",
+      temporaryPreferences: clearTemporaryPreferenceData()
+    });
+    if (!saved.ok) {
+      return res.status(saved.error === "invalid_user_id" ? 400 : 404).json(saved);
+    }
+    res.json(saved);
+  } catch (e) {
+    console.error("Clear temporary preferences error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/chat-users/:userId/conversations/:slug/temporary-preferences/remove", (req, res) => {
+  try {
+    const key = typeof req.body?.key === "string" ? req.body.key.trim() : "";
+    if (!key) {
+      return res.status(400).json({ ok: false, error: "missing_key" });
+    }
+
+    const loaded = loadConversationState(req.params.userId, req.params.slug);
+    if (!loaded.ok) {
+      return res.status(400).json(loaded);
+    }
+
+    const saved = saveConversationState(req.params.userId, req.params.slug, {
+      profileName: loaded.data.profileName || "",
+      messages: normalizeConversationMessages(loaded.data.messages),
+      autopilotReport: loaded.data.autopilotReport || "",
+      temporaryPreferences: removeTemporaryPreferenceItem(loaded.data.temporaryPreferences, key)
+    });
+    if (!saved.ok) {
+      return res.status(saved.error === "invalid_user_id" ? 400 : 404).json(saved);
+    }
+    res.json(saved);
+  } catch (e) {
+    console.error("Remove temporary preference error:", e);
     res.status(500).json({ ok: false, error: "server_error", message: e.message });
   }
 });
@@ -675,6 +775,60 @@ app.post("/api/profiles/name", async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.post("/api/meeting-advisor/trigger", async (req, res) => {
+  try {
+    const {
+      recentLines = [],
+      contextLines = [],
+      recentSummary = ""
+    } = req.body || {};
+
+    const result = await detectMeetingAdviceTrigger({
+      recentLines: normalizeTranscriptLineArray(recentLines, 10),
+      contextLines: normalizeTranscriptLineArray(contextLines, 12),
+      recentSummary: typeof recentSummary === "string" ? recentSummary : ""
+    });
+
+    res.json({ ok: true, data: result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "meeting_trigger_failed", message: e?.message || "unknown_error" });
+  }
+});
+
+app.post("/api/meeting-advisor/advice", async (req, res) => {
+  try {
+    const {
+      signalType = "",
+      focusSpan = "",
+      recentLines = [],
+      contextLines = [],
+      recentSummary = "",
+      profileName = "",
+      profileRole = "",
+      pendingAdvice = [],
+      webContext = [],
+      forceWebSearch = false
+    } = req.body || {};
+
+    const advice = await generateMeetingAdvice({
+      signalType: typeof signalType === "string" ? signalType : "",
+      focusSpan: typeof focusSpan === "string" ? focusSpan : "",
+      recentLines: normalizeTranscriptLineArray(recentLines, 10),
+      contextLines: normalizeTranscriptLineArray(contextLines, 16),
+      recentSummary: typeof recentSummary === "string" ? recentSummary : "",
+      profileName: typeof profileName === "string" ? profileName : "",
+      profileRole: typeof profileRole === "string" ? profileRole : "",
+      pendingAdviceDigest: buildAdviceDigest(pendingAdvice),
+      webContext: normalizeWebContext(webContext),
+      forceWebSearch: forceWebSearch === true
+    });
+
+    res.json({ ok: true, data: advice });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "meeting_advice_failed", message: e?.message || "unknown_error" });
   }
 });
 

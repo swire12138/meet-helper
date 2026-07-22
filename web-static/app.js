@@ -31,6 +31,22 @@ const vm = createApp({
     const newProfileName = ref("");
     const newProfileRole = ref("");
     const currentCaptureProfileSlug = ref(null);
+    const meetingAdviceItems = ref([]);
+    const meetingAdvisorLoading = ref(false);
+    const meetingAdvisorStatus = ref("录制中遇到阻塞、错误或明显风险时，这里会主动出现建议。");
+    const meetingAdvisorEnabled = ref(true);
+    const meetingAdvisorForceWebSearch = ref(false);
+    const lastMeetingAdviceFingerprint = ref("");
+    const meetingAdvisorDebug = ref({
+      updatedAt: "",
+      recentLines: [],
+      contextLines: [],
+      trigger: null,
+      advice: null,
+      search: null,
+      skippedReason: "",
+      error: ""
+    });
 
     function formatBytes(bytes) {
       if (bytes < 1024) return `${bytes} B`;
@@ -74,6 +90,68 @@ const vm = createApp({
       };
       
       return globalThis.DOMPurify?.sanitize ? globalThis.DOMPurify.sanitize(html, purifyConfig) : html;
+    }
+
+    function formatDebugJson(value) {
+      if (value == null) return "暂无";
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+
+    function getMeetingAdvisorNetworkStatus() {
+      const search = meetingAdvisorDebug.value?.search;
+      if (!search) return "暂无";
+      return search.connected ? "已联网" : "未联网";
+    }
+
+    function getMeetingAdvisorSearchMode() {
+      const search = meetingAdvisorDebug.value?.search;
+      if (!search) return "暂无";
+      if (search.mode === "forced_qwen_web_search") return "强制 Qwen web_search";
+      if (search.mode === "qwen_web_search") return "Qwen web_search";
+      if (search.mode === "disabled") return "disabled";
+      return search.mode || "暂无";
+    }
+
+    function getMeetingAdvisorSearchReason() {
+      const search = meetingAdvisorDebug.value?.search;
+      if (!search) return "暂无";
+      return search.reason || search.sourceNote || "暂无";
+    }
+
+    function getMeetingAdvisorTriggerReason() {
+      const trigger = meetingAdvisorDebug.value?.trigger?.data;
+      if (!trigger) return "暂无";
+      return trigger.reason || "暂无";
+    }
+
+    function getMeetingAdvisorFocusSpan() {
+      const trigger = meetingAdvisorDebug.value?.trigger?.data;
+      if (!trigger) return "暂无";
+      return trigger.focusSpan || "暂无";
+    }
+
+    function getMeetingAdvisorAdviceSummary() {
+      const advice = meetingAdvisorDebug.value?.advice?.data;
+      if (!advice) return "暂无";
+      return advice.summary || advice.title || "暂无";
+    }
+
+    function buildMeetingAdviceAnalysisRecord({ triggerData = null, adviceData = null, search = null } = {}) {
+      return {
+        triggerReason: triggerData?.reason || "暂无",
+        focusSpan: triggerData?.focusSpan || "暂无",
+        adviceSummary: adviceData?.summary || adviceData?.title || "暂无",
+        networkStatus: search?.connected ? "已联网" : "未联网",
+        networkReason: search?.reason || search?.sourceNote || "暂无",
+        searchMode: search?.mode === "forced_qwen_web_search"
+          ? "强制 Qwen web_search"
+          : (search?.mode === "qwen_web_search" ? "Qwen web_search" : (search?.mode || "暂无")),
+        searchQuery: search?.query || ""
+      };
     }
 
     function onPickFile(e) {
@@ -454,13 +532,23 @@ const vm = createApp({
 
     let analysisInterval = null;
     let isAnalyzing = false;
+    let pendingCaseAnalysis = false;
     const caseLastProcessedFile = ref(null);
     const caseLastProcessedTranscriptLineCount = ref(0);
+
+    function scheduleCaseAnalysis(delay = 5000) {
+      if (analysisInterval) clearTimeout(analysisInterval);
+      if (!isCapturing.value) return;
+      analysisInterval = setTimeout(() => {
+        triggerCaseAnalysis(false);
+      }, delay);
+    }
 
     function appendTranscriptLine(line) {
       if (!line) return;
       transcriptLines.value.push(line);
       transcriptDraft.value = "";
+      pendingCaseAnalysis = true;
     }
 
     function updateTranscriptDraft(text) {
@@ -478,6 +566,267 @@ const vm = createApp({
         content.push(`[识别中] ${transcriptDraft.value}`);
       }
       return content.length ? content.join("\n") : "暂无";
+    }
+
+    function getCurrentCaptureProfile() {
+      if (!currentCaptureProfileSlug.value) return null;
+      return profileList.value.find((item) => item.slug === currentCaptureProfileSlug.value) || null;
+    }
+
+    function buildMeetingAdviceFingerprint(item) {
+      return [item?.title || "", item?.summary || "", item?.suggestion || ""].join("|").trim();
+    }
+
+    function normalizeMeetingAdviceKeyPart(text) {
+      return String(text || "")
+        .trim()
+        .replace(/[\s\p{P}\p{S}]+/gu, "")
+        .slice(0, 48);
+    }
+
+    function buildMeetingAdviceIssueKey({ signalType = "", focusSpan = "", title = "", summary = "" } = {}) {
+      const core = normalizeMeetingAdviceKeyPart(focusSpan) || normalizeMeetingAdviceKeyPart(summary) || normalizeMeetingAdviceKeyPart(title);
+      return core ? [signalType || "none", core].join("|") : "";
+    }
+
+    function updateMeetingAdvisorDebug(patch = {}) {
+      meetingAdvisorDebug.value = {
+        ...meetingAdvisorDebug.value,
+        ...patch,
+        updatedAt: new Date().toLocaleTimeString()
+      };
+    }
+
+    function removeMeetingAdvice(id) {
+      meetingAdviceItems.value = meetingAdviceItems.value.filter((item) => item.id !== id);
+    }
+
+    function buildForcedMeetingTrigger(recentLines, triggerData = null) {
+      const trimmedRecent = Array.isArray(recentLines)
+        ? recentLines.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      const fallbackFocusSpan = trimmedRecent.slice(-2).join("；").slice(0, 120);
+      return {
+        shouldTrigger: true,
+        signalType: triggerData?.signalType && triggerData.signalType !== "none" ? triggerData.signalType : "decision_pending",
+        confidence: typeof triggerData?.confidence === "number" ? triggerData.confidence : 1,
+        reason: triggerData?.shouldTrigger
+          ? (triggerData.reason || "已手动触发会议建议。")
+          : "已手动强制触发会议建议，本轮即使预判未命中也继续生成建议。",
+        focusSpan: triggerData?.focusSpan || fallbackFocusSpan || "最近会议片段"
+      };
+    }
+
+    async function requestMeetingAdviceManually() {
+      if (meetingAdvisorLoading.value) return;
+      const forceWebSearch = meetingAdvisorForceWebSearch.value === true;
+      const recentLines = transcriptLines.value.slice(-8);
+      const contextLines = transcriptLines.value.slice(-16);
+      if (recentLines.length === 0) {
+        meetingAdvisorStatus.value = "当前还没有可分析的会议转写，先开始录制或等待识别出内容。";
+        updateMeetingAdvisorDebug({
+          skippedReason: meetingAdvisorStatus.value,
+          error: "",
+          recentLines: [],
+          contextLines: []
+        });
+        return;
+      }
+      meetingAdvisorStatus.value = forceWebSearch
+        ? "已手动强制联网，正在获取会议建议..."
+        : "已手动强制触发，正在获取会议建议...";
+      await requestMeetingAdvice({
+        recentLines,
+        contextLines,
+        isFinal: true,
+        manualTrigger: true,
+        forceTrigger: true,
+        forceWebSearch
+      });
+    }
+
+    async function requestMeetingAdvice({
+      recentLines = [],
+      contextLines = [],
+      isFinal = false,
+      manualTrigger = false,
+      forceTrigger = false,
+      forceWebSearch = false
+    } = {}) {
+      if ((!meetingAdvisorEnabled.value && !manualTrigger) || meetingAdvisorLoading.value) return;
+      const recent = Array.isArray(recentLines) ? recentLines.map((item) => String(item || "").trim()).filter(Boolean) : [];
+      const context = Array.isArray(contextLines) ? contextLines.map((item) => String(item || "").trim()).filter(Boolean) : [];
+      if (recent.length === 0 && !isFinal) return;
+
+      meetingAdvisorLoading.value = true;
+      meetingAdvisorStatus.value = forceWebSearch
+        ? "正在强制联网获取会议建议..."
+        : (manualTrigger ? "正在强制获取会议建议..." : "正在快速判断是否需要给会议建议...");
+      updateMeetingAdvisorDebug({
+        recentLines: recent.slice(-8),
+        contextLines: context.slice(-16),
+        trigger: null,
+        advice: null,
+        search: null,
+        skippedReason: "",
+        error: ""
+      });
+
+      try {
+        const summaryText = meetingAdviceItems.value
+          .slice(0, 2)
+          .map((item) => item.summary || item.title)
+          .filter(Boolean)
+          .join("；");
+
+        const triggerResp = await fetch("/api/meeting-advisor/trigger", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            recentLines: recent.slice(-8),
+            contextLines: context.slice(-16),
+            recentSummary: summaryText
+          })
+        });
+        const trigger = await triggerResp.json().catch(() => null);
+        let effectiveTrigger = trigger;
+        if (!triggerResp.ok || !trigger?.ok || !trigger?.data) {
+          meetingAdvisorStatus.value = `会议建议预判失败：${trigger?.message || trigger?.error || `http_${triggerResp.status}`}`;
+          updateMeetingAdvisorDebug({ error: meetingAdvisorStatus.value });
+          return;
+        }
+
+        if (!trigger.data.shouldTrigger && !forceTrigger) {
+          updateMeetingAdvisorDebug({ trigger });
+          meetingAdvisorStatus.value = trigger.data.reason || "这一段暂时没有明显阻塞或错误信号。";
+          updateMeetingAdvisorDebug({ skippedReason: meetingAdvisorStatus.value });
+          return;
+        }
+
+        const effectiveTriggerData = forceTrigger
+          ? buildForcedMeetingTrigger(recent, trigger.data)
+          : trigger.data;
+        effectiveTrigger = {
+          ...trigger,
+          data: effectiveTriggerData
+        };
+        updateMeetingAdvisorDebug({ trigger: effectiveTrigger });
+
+        const profile = getCurrentCaptureProfile();
+        const basePayload = {
+          signalType: effectiveTriggerData.signalType || "",
+          focusSpan: effectiveTriggerData.focusSpan || "",
+          recentLines: recent.slice(-8),
+          contextLines: context.slice(-16),
+          recentSummary: summaryText,
+          profileName: profile?.name || "",
+          profileRole: profile?.role || "",
+          pendingAdvice: meetingAdviceItems.value.slice(0, 5),
+          forceWebSearch
+        };
+
+        meetingAdvisorStatus.value = forceWebSearch
+          ? "已进入强制联网模式，正在生成建议..."
+          : (forceTrigger && !trigger.data.shouldTrigger
+            ? "本轮未命中预判，但已按手动强制模式继续生成建议..."
+            : "已命中会议信号，正在生成建议...");
+        const adviceResp = await fetch("/api/meeting-advisor/advice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(basePayload)
+        });
+        const adviceResult = await adviceResp.json().catch(() => null);
+        updateMeetingAdvisorDebug({ advice: adviceResult });
+        if (!adviceResp.ok || !adviceResult?.ok || !adviceResult?.data) {
+          meetingAdvisorStatus.value = `会议建议生成失败：${adviceResult?.message || adviceResult?.error || `http_${adviceResp.status}`}`;
+          updateMeetingAdvisorDebug({ error: meetingAdvisorStatus.value });
+          return;
+        }
+
+        const adviceData = adviceResult.data;
+        const searchDebug = adviceData?.usedWebSearch
+          ? {
+              ok: true,
+              connected: true,
+              mode: forceWebSearch ? "forced_qwen_web_search" : "qwen_web_search",
+              query: adviceData.searchQuery || "",
+              sourceNote: adviceData.sourceNote || "",
+              reason: forceWebSearch
+                ? (adviceData.sourceNote || "本次由你手动开启强制联网，已通过 Qwen web_search 补充外部资料。")
+                : (adviceData.sourceNote || "本次建议引用了外部实时资料，所以已联网搜索。")
+            }
+          : {
+              ok: true,
+              connected: false,
+              mode: "disabled",
+              query: "",
+              sourceNote: adviceData.sourceNote || "基于当前会议内容生成。",
+              reason: adviceData.sourceNote || "本次建议仅基于当前会议内容生成，未命中需要联网的信号。"
+            };
+        updateMeetingAdvisorDebug({ search: searchDebug });
+
+        const summary = adviceData.summary || effectiveTriggerData.reason || "";
+        const issueKey = buildMeetingAdviceIssueKey({
+          signalType: effectiveTriggerData.signalType || "",
+          focusSpan: effectiveTriggerData.focusSpan || "",
+          title: adviceData.title || "会议建议",
+          summary
+        });
+        const fingerprint = buildMeetingAdviceFingerprint({
+          title: adviceData.title || "会议建议",
+          summary,
+          suggestion: adviceData.suggestion || ""
+        });
+        const nextItem = {
+          id: `meeting-advice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          issueKey,
+          signalType: effectiveTriggerData.signalType || "",
+          focusSpan: effectiveTriggerData.focusSpan || "",
+          title: adviceData.title || "会议建议",
+          adviceType: adviceData.adviceType || "proposal",
+          summary,
+          suggestion: adviceData.suggestion || "",
+          nextQuestion: adviceData.nextQuestion || "",
+          sourceNote: adviceData.sourceNote || (adviceData.usedWebSearch ? "已通过 Qwen web_search 联网补充外部资料。" : "基于当前会议内容生成。"),
+          analysisRecord: buildMeetingAdviceAnalysisRecord({
+            triggerData: effectiveTriggerData,
+            adviceData,
+            search: searchDebug
+          })
+        };
+        const existingIndex = issueKey
+          ? meetingAdviceItems.value.findIndex((item) => item.issueKey === issueKey)
+          : -1;
+        const sameFingerprintIndex = meetingAdviceItems.value.findIndex((item) => buildMeetingAdviceFingerprint(item) === fingerprint);
+        if (!fingerprint || fingerprint === lastMeetingAdviceFingerprint.value || sameFingerprintIndex >= 0) {
+          meetingAdvisorStatus.value = "这次识别到的建议和最近内容重复，已自动跳过。";
+          updateMeetingAdvisorDebug({ skippedReason: meetingAdvisorStatus.value });
+          return;
+        }
+
+        lastMeetingAdviceFingerprint.value = fingerprint;
+        if (existingIndex >= 0) {
+          const existing = meetingAdviceItems.value[existingIndex];
+          nextItem.id = existing.id;
+          meetingAdviceItems.value = [
+            nextItem,
+            ...meetingAdviceItems.value.filter((item, idx) => idx !== existingIndex)
+          ].slice(0, 8);
+          meetingAdvisorStatus.value = "已更新同一困惑点的会议建议。";
+        } else {
+          meetingAdviceItems.value = [
+            nextItem,
+            ...meetingAdviceItems.value
+          ].slice(0, 8);
+          meetingAdvisorStatus.value = "已生成一条新的会议建议。";
+        }
+      } catch (e) {
+        console.error("meeting advisor request error:", e);
+        meetingAdvisorStatus.value = `会议建议请求出错：${e?.message || "network_error"}`;
+        updateMeetingAdvisorDebug({ error: meetingAdvisorStatus.value });
+      } finally {
+        meetingAdvisorLoading.value = false;
+      }
     }
 
     async function toggleCapture() {
@@ -624,9 +973,7 @@ const vm = createApp({
         takeScreenshot();
 
         pushLog("开启实时分析 (基于上一轮完成自动触发)...");
-        analysisInterval = setTimeout(() => {
-          triggerCaseAnalysis(false);
-        }, 15000);
+        scheduleCaseAnalysis(15000);
       } catch (e) {
         console.error("Capture failed:", e);
         pushLog("截屏权限被拒绝或发生错误");
@@ -725,6 +1072,10 @@ const vm = createApp({
         }
         return;
       }
+      if (!isFinal && !pendingCaseAnalysis) {
+        scheduleCaseAnalysis(5000);
+        return;
+      }
       isAnalyzing = true;
       pushLog(isFinal ? "开始最终案例分析..." : "触发实时增量案例分析...");
       try {
@@ -738,6 +1089,17 @@ const vm = createApp({
         const startIndex = Math.max(0, caseLastProcessedTranscriptLineCount.value - contextLineCount);
         const contextLines = transcriptLines.value.slice(startIndex, caseLastProcessedTranscriptLineCount.value);
         let contextTranscriptText = contextLines.join("\n");
+        if ((newLines.length >= 3 || (isFinal && newTranscriptText.trim())) && !meetingAdvisorLoading.value) {
+          Promise.resolve()
+            .then(() => requestMeetingAdvice({
+              recentLines: newLines.slice(-8),
+              contextLines: transcriptLines.value.slice(-16),
+              isFinal
+            }))
+            .catch((advisorErr) => {
+              console.error("meeting advisor background error:", advisorErr);
+            });
+        }
 
         let prevAnalysisPayload = null;
         if (data.value) {
@@ -786,6 +1148,7 @@ const vm = createApp({
         }
 
         if (res.ok || res.error === 'no_valid_screenshots' || res.error === 'no_new_content') {
+          pendingCaseAnalysis = false;
           caseLastProcessedTranscriptLineCount.value += newLines.length;
         }
 
@@ -837,9 +1200,7 @@ const vm = createApp({
       } finally {
         isAnalyzing = false;
         if (isCapturing.value && !isFinal) {
-           analysisInterval = setTimeout(() => {
-             triggerCaseAnalysis(false);
-           }, 5000);
+          scheduleCaseAnalysis(5000);
         }
       }
     }
@@ -862,6 +1223,7 @@ const vm = createApp({
         });
         const res = await r.json();
         if (res.ok) {
+          pendingCaseAnalysis = true;
           pushLog(`截屏已保存: ${res.filename}`);
         } else {
           pushLog(`截屏保存失败`);
@@ -887,6 +1249,12 @@ const vm = createApp({
       isCapturing,
       caseImages,
       transcriptLines,
+      meetingAdviceItems,
+      meetingAdvisorLoading,
+      meetingAdvisorStatus,
+      meetingAdvisorEnabled,
+      meetingAdvisorForceWebSearch,
+      meetingAdvisorDebug,
       showCaptureProfileModal,
       captureProfileMode,
       captureProfilePurpose,
@@ -901,7 +1269,16 @@ const vm = createApp({
       onUpload,
       onReset,
       toggleCapture,
+      formatDebugJson,
+      getMeetingAdvisorNetworkStatus,
+      getMeetingAdvisorSearchMode,
+      getMeetingAdvisorSearchReason,
+      getMeetingAdvisorTriggerReason,
+      getMeetingAdvisorFocusSpan,
+      getMeetingAdvisorAdviceSummary,
       getTranscriptDisplay,
+      removeMeetingAdvice,
+      requestMeetingAdviceManually,
       speakerNameMap,
       profileList,
       selectedProfileSlug,
@@ -984,6 +1361,66 @@ const vm = createApp({
           <div class="subtle">当前更新画像：{{ currentCaptureProfileSlug ? getProfileNameBySlug(currentCaptureProfileSlug) : '未选择' }}</div>
         </div>
         <div class="pre">{{ getTranscriptDisplay() }}</div>
+      </div>
+
+      <div class="card monitor">
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <span>会议建议</span>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <label class="subtle" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+              <input type="checkbox" v-model="meetingAdvisorEnabled" />
+              <span>启用主动建议</span>
+            </label>
+            <label class="subtle" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+              <input type="checkbox" v-model="meetingAdvisorForceWebSearch" />
+              <span>强制联网</span>
+            </label>
+            <button class="btn secondary" @click="requestMeetingAdviceManually" :disabled="meetingAdvisorLoading">
+              {{ meetingAdvisorLoading ? '获取中...' : '强制获取建议' }}
+            </button>
+            <div class="subtle">{{ meetingAdvisorLoading ? '判断中...' : (meetingAdviceItems.length + ' 条') }}</div>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:0;">{{ meetingAdvisorStatus }}</div>
+        <div v-if="meetingAdviceItems.length === 0" class="hint">还没有触发会议建议。</div>
+        <div style="margin-top:12px;padding:12px;border:1px dashed var(--border-color);border-radius:10px;background:#f8fafc;">
+          <div style="font-weight:700;">最近一次分析结果</div>
+          <div class="subtle" style="margin-top:6px;">更新时间：{{ meetingAdvisorDebug.updatedAt || '暂无' }}</div>
+          <div v-if="meetingAdvisorDebug.skippedReason" class="hint" style="margin-top:8px;">未出建议原因：{{ meetingAdvisorDebug.skippedReason }}</div>
+          <div v-if="meetingAdvisorDebug.error" class="hint" style="margin-top:8px;color:#b91c1c;">错误：{{ meetingAdvisorDebug.error }}</div>
+          <div class="subtle" style="margin-top:10px;">触发原因：{{ getMeetingAdvisorTriggerReason() }}</div>
+          <div class="subtle" style="margin-top:6px;">困惑点：{{ getMeetingAdvisorFocusSpan() }}</div>
+          <div class="subtle" style="margin-top:6px;">建议摘要：{{ getMeetingAdvisorAdviceSummary() }}</div>
+          <div class="subtle" style="margin-top:10px;">是否联网：{{ getMeetingAdvisorNetworkStatus() }}</div>
+          <div class="subtle" style="margin-top:6px;">为什么联网：{{ getMeetingAdvisorSearchReason() }}</div>
+          <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ getMeetingAdvisorSearchMode() }}</div>
+          <div v-if="meetingAdvisorDebug.search && meetingAdvisorDebug.search.query" class="subtle" style="margin-top:6px;">搜索词：{{ meetingAdvisorDebug.search.query }}</div>
+          <div class="subtle" style="margin-top:10px;">最近片段</div>
+          <div class="pre" style="margin-top:6px;max-height:120px;">{{ meetingAdvisorDebug.recentLines.join('\\n') || '暂无' }}</div>
+        </div>
+        <div v-for="item in meetingAdviceItems" :key="item.id" style="margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:10px;background:#fff;">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+            <div>
+              <div class="subtle">{{ item.signalType || item.adviceType }}</div>
+              <div style="font-weight:700;margin-top:4px;">{{ item.title }}</div>
+            </div>
+            <button class="btn secondary" @click="removeMeetingAdvice(item.id)">删除</button>
+          </div>
+          <div class="hint" style="margin-top:8px;">{{ item.summary }}</div>
+          <div class="md" style="margin-top:8px;" v-html="renderMd(item.suggestion)"></div>
+          <div v-if="item.nextQuestion" class="hint" style="margin-top:8px;">建议追问：{{ item.nextQuestion }}</div>
+          <div v-if="item.analysisRecord" style="margin-top:10px;padding:10px;border:1px dashed var(--border-color);border-radius:8px;background:#f8fafc;">
+            <div style="font-weight:700;">本条分析记录</div>
+            <div class="subtle" style="margin-top:6px;">触发原因：{{ item.analysisRecord.triggerReason }}</div>
+            <div class="subtle" style="margin-top:6px;">困惑点：{{ item.analysisRecord.focusSpan }}</div>
+            <div class="subtle" style="margin-top:6px;">建议摘要：{{ item.analysisRecord.adviceSummary }}</div>
+            <div class="subtle" style="margin-top:6px;">是否联网：{{ item.analysisRecord.networkStatus }}</div>
+            <div class="subtle" style="margin-top:6px;">为什么联网：{{ item.analysisRecord.networkReason }}</div>
+            <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ item.analysisRecord.searchMode }}</div>
+            <div v-if="item.analysisRecord.searchQuery" class="subtle" style="margin-top:6px;">搜索词：{{ item.analysisRecord.searchQuery }}</div>
+          </div>
+          <div class="subtle" style="margin-top:8px;">{{ item.sourceNote }}</div>
+        </div>
       </div>
 
       <div class="card monitor">

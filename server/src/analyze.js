@@ -21,14 +21,14 @@ function validateShape(obj) {
 
 async function completeJson(messages) {
   const client = createQwenClient();
-  const { model, enableThinking, maxTokens } = getQwenConfig();
+  const { model, maxTokens } = getQwenConfig();
 
   const resp = await client.chat.completions.create({
     model,
     messages,
     temperature: 0.2,
     max_tokens: maxTokens,
-    extra_body: { enable_thinking: enableThinking }
+    extra_body: { enable_thinking: false }
   });
 
   return resp.choices?.[0]?.message?.content ?? "";
@@ -196,7 +196,8 @@ export async function analyzeCaseContent(images, transcriptText, contextTranscri
     model: targetModel,
     messages,
     temperature: 0.2,
-    max_tokens: maxTokens || 8192
+    max_tokens: maxTokens || 8192,
+    extra_body: { enable_thinking: false }
   });
 
     const raw = resp.choices?.[0]?.message?.content ?? "";
