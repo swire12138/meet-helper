@@ -33,9 +33,10 @@ const vm = createApp({
     const currentCaptureProfileSlug = ref(null);
     const meetingAdviceItems = ref([]);
     const meetingAdvisorLoading = ref(false);
-    const meetingAdvisorStatus = ref("录制中遇到阻塞、错误或明显风险时，这里会主动出现建议。");
+    const meetingAdvisorStatus = ref("");
     const meetingAdvisorEnabled = ref(true);
     const meetingAdvisorForceWebSearch = ref(false);
+    const meetingAdviceManualInstruction = ref("");
     const lastMeetingAdviceFingerprint = ref("");
     const meetingAdvisorDebug = ref({
       updatedAt: "",
@@ -44,6 +45,7 @@ const vm = createApp({
       trigger: null,
       advice: null,
       search: null,
+      manualInstruction: "",
       skippedReason: "",
       error: ""
     });
@@ -140,11 +142,16 @@ const vm = createApp({
       return advice.summary || advice.title || "暂无";
     }
 
-    function buildMeetingAdviceAnalysisRecord({ triggerData = null, adviceData = null, search = null } = {}) {
+    function getMeetingAdvisorManualInstruction() {
+      return meetingAdvisorDebug.value?.manualInstruction || "暂无";
+    }
+
+    function buildMeetingAdviceAnalysisRecord({ triggerData = null, adviceData = null, search = null, manualInstruction = "" } = {}) {
       return {
         triggerReason: triggerData?.reason || "暂无",
         focusSpan: triggerData?.focusSpan || "暂无",
         adviceSummary: adviceData?.summary || adviceData?.title || "暂无",
+        manualInstruction: manualInstruction || "",
         networkStatus: search?.connected ? "已联网" : "未联网",
         networkReason: search?.reason || search?.sourceNote || "暂无",
         searchMode: search?.mode === "forced_qwen_web_search"
@@ -601,10 +608,11 @@ const vm = createApp({
       meetingAdviceItems.value = meetingAdviceItems.value.filter((item) => item.id !== id);
     }
 
-    function buildForcedMeetingTrigger(recentLines, triggerData = null) {
+    function buildForcedMeetingTrigger(recentLines, triggerData = null, manualInstruction = "") {
       const trimmedRecent = Array.isArray(recentLines)
         ? recentLines.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
+      const manualFocus = typeof manualInstruction === "string" ? manualInstruction.trim().slice(0, 120) : "";
       const fallbackFocusSpan = trimmedRecent.slice(-2).join("；").slice(0, 120);
       return {
         shouldTrigger: true,
@@ -612,14 +620,17 @@ const vm = createApp({
         confidence: typeof triggerData?.confidence === "number" ? triggerData.confidence : 1,
         reason: triggerData?.shouldTrigger
           ? (triggerData.reason || "已手动触发会议建议。")
-          : "已手动强制触发会议建议，本轮即使预判未命中也继续生成建议。",
-        focusSpan: triggerData?.focusSpan || fallbackFocusSpan || "最近会议片段"
+          : (manualFocus ? `已按手动要求强制触发会议建议：${manualFocus}` : "已手动强制触发会议建议，本轮即使预判未命中也继续生成建议。"),
+        focusSpan: triggerData?.focusSpan || manualFocus || fallbackFocusSpan || "最近会议片段"
       };
     }
 
-    async function requestMeetingAdviceManually() {
+    async function requestMeetingAdviceManually(manualInstruction = "") {
       if (meetingAdvisorLoading.value) return;
       const forceWebSearch = meetingAdvisorForceWebSearch.value === true;
+      const normalizedManualInstruction = typeof manualInstruction === "string"
+        ? manualInstruction.trim()
+        : meetingAdviceManualInstruction.value.trim();
       const recentLines = transcriptLines.value.slice(-8);
       const contextLines = transcriptLines.value.slice(-16);
       if (recentLines.length === 0) {
@@ -628,7 +639,8 @@ const vm = createApp({
           skippedReason: meetingAdvisorStatus.value,
           error: "",
           recentLines: [],
-          contextLines: []
+          contextLines: [],
+          manualInstruction: normalizedManualInstruction
         });
         return;
       }
@@ -641,6 +653,7 @@ const vm = createApp({
         isFinal: true,
         manualTrigger: true,
         forceTrigger: true,
+        manualInstruction: normalizedManualInstruction,
         forceWebSearch
       });
     }
@@ -651,6 +664,7 @@ const vm = createApp({
       isFinal = false,
       manualTrigger = false,
       forceTrigger = false,
+      manualInstruction = "",
       forceWebSearch = false
     } = {}) {
       if ((!meetingAdvisorEnabled.value && !manualTrigger) || meetingAdvisorLoading.value) return;
@@ -668,6 +682,7 @@ const vm = createApp({
         trigger: null,
         advice: null,
         search: null,
+        manualInstruction: typeof manualInstruction === "string" ? manualInstruction.trim() : "",
         skippedReason: "",
         error: ""
       });
@@ -704,7 +719,7 @@ const vm = createApp({
         }
 
         const effectiveTriggerData = forceTrigger
-          ? buildForcedMeetingTrigger(recent, trigger.data)
+          ? buildForcedMeetingTrigger(recent, trigger.data, manualInstruction)
           : trigger.data;
         effectiveTrigger = {
           ...trigger,
@@ -722,6 +737,7 @@ const vm = createApp({
           profileName: profile?.name || "",
           profileRole: profile?.role || "",
           pendingAdvice: meetingAdviceItems.value.slice(0, 5),
+          manualInstruction: typeof manualInstruction === "string" ? manualInstruction.trim() : "",
           forceWebSearch
         };
 
@@ -791,7 +807,8 @@ const vm = createApp({
           analysisRecord: buildMeetingAdviceAnalysisRecord({
             triggerData: effectiveTriggerData,
             adviceData,
-            search: searchDebug
+            search: searchDebug,
+            manualInstruction: typeof manualInstruction === "string" ? manualInstruction.trim() : ""
           })
         };
         const existingIndex = issueKey
@@ -1254,6 +1271,7 @@ const vm = createApp({
       meetingAdvisorStatus,
       meetingAdvisorEnabled,
       meetingAdvisorForceWebSearch,
+      meetingAdviceManualInstruction,
       meetingAdvisorDebug,
       showCaptureProfileModal,
       captureProfileMode,
@@ -1276,6 +1294,7 @@ const vm = createApp({
       getMeetingAdvisorTriggerReason,
       getMeetingAdvisorFocusSpan,
       getMeetingAdvisorAdviceSummary,
+      getMeetingAdvisorManualInstruction,
       getTranscriptDisplay,
       removeMeetingAdvice,
       requestMeetingAdviceManually,
@@ -1348,144 +1367,157 @@ const vm = createApp({
         </div>
       </div>
 
-      <div v-if="caseImages && caseImages.length > 0" class="card monitor" style="margin-top:20px;">
-        <div class="panel-title">会议截屏记录（自动去重）</div>
-        <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;margin-top:10px;">
-          <img v-for="(img, idx) in caseImages" :key="idx" :src="img" style="max-width:300px;border-radius:8px;border:1px solid #334155;flex-shrink:0;" />
-        </div>
-      </div>
-
-      <div class="card monitor">
-        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
-          <span>实时转写</span>
-          <div class="subtle">当前更新画像：{{ currentCaptureProfileSlug ? getProfileNameBySlug(currentCaptureProfileSlug) : '未选择' }}</div>
-        </div>
-        <div class="pre">{{ getTranscriptDisplay() }}</div>
-      </div>
-
-      <div class="card monitor">
-        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-          <span>会议建议</span>
-          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-            <label class="subtle" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
-              <input type="checkbox" v-model="meetingAdvisorEnabled" />
-              <span>启用主动建议</span>
-            </label>
-            <label class="subtle" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
-              <input type="checkbox" v-model="meetingAdvisorForceWebSearch" />
-              <span>强制联网</span>
-            </label>
-            <button class="btn secondary" @click="requestMeetingAdviceManually" :disabled="meetingAdvisorLoading">
-              {{ meetingAdvisorLoading ? '获取中...' : '强制获取建议' }}
-            </button>
-            <div class="subtle">{{ meetingAdvisorLoading ? '判断中...' : (meetingAdviceItems.length + ' 条') }}</div>
+      <div class="monitor-layout">
+        <div class="monitor-main">
+          <div v-if="caseImages && caseImages.length > 0" class="card monitor" style="margin-top:20px;">
+            <div class="panel-title">会议截屏记录（自动去重）</div>
+            <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;margin-top:10px;">
+              <img v-for="(img, idx) in caseImages" :key="idx" :src="img" style="max-width:300px;border-radius:8px;border:1px solid #334155;flex-shrink:0;" />
+            </div>
           </div>
-        </div>
-        <div class="hint" style="margin-top:0;">{{ meetingAdvisorStatus }}</div>
-        <div v-if="meetingAdviceItems.length === 0" class="hint">还没有触发会议建议。</div>
-        <div style="margin-top:12px;padding:12px;border:1px dashed var(--border-color);border-radius:10px;background:#f8fafc;">
-          <div style="font-weight:700;">最近一次分析结果</div>
-          <div class="subtle" style="margin-top:6px;">更新时间：{{ meetingAdvisorDebug.updatedAt || '暂无' }}</div>
-          <div v-if="meetingAdvisorDebug.skippedReason" class="hint" style="margin-top:8px;">未出建议原因：{{ meetingAdvisorDebug.skippedReason }}</div>
-          <div v-if="meetingAdvisorDebug.error" class="hint" style="margin-top:8px;color:#b91c1c;">错误：{{ meetingAdvisorDebug.error }}</div>
-          <div class="subtle" style="margin-top:10px;">触发原因：{{ getMeetingAdvisorTriggerReason() }}</div>
-          <div class="subtle" style="margin-top:6px;">困惑点：{{ getMeetingAdvisorFocusSpan() }}</div>
-          <div class="subtle" style="margin-top:6px;">建议摘要：{{ getMeetingAdvisorAdviceSummary() }}</div>
-          <div class="subtle" style="margin-top:10px;">是否联网：{{ getMeetingAdvisorNetworkStatus() }}</div>
-          <div class="subtle" style="margin-top:6px;">为什么联网：{{ getMeetingAdvisorSearchReason() }}</div>
-          <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ getMeetingAdvisorSearchMode() }}</div>
-          <div v-if="meetingAdvisorDebug.search && meetingAdvisorDebug.search.query" class="subtle" style="margin-top:6px;">搜索词：{{ meetingAdvisorDebug.search.query }}</div>
-          <div class="subtle" style="margin-top:10px;">最近片段</div>
-          <div class="pre" style="margin-top:6px;max-height:120px;">{{ meetingAdvisorDebug.recentLines.join('\\n') || '暂无' }}</div>
-        </div>
-        <div v-for="item in meetingAdviceItems" :key="item.id" style="margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:10px;background:#fff;">
-          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+
+          <div class="card monitor">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>实时转写</span>
+              <div class="subtle">当前更新画像：{{ currentCaptureProfileSlug ? getProfileNameBySlug(currentCaptureProfileSlug) : '未选择' }}</div>
+            </div>
+            <div class="pre">{{ getTranscriptDisplay() }}</div>
+          </div>
+
+          <div class="card monitor">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" @click="showProfilePanel = !showProfilePanel">
+              <span>同事画像 ({{ profileList.length }})</span>
+              <span style="font-size:12px;color:#94a3b8;">{{ showProfilePanel ? '收起 ▲' : '展开 ▼' }}</span>
+            </div>
             <div>
-              <div class="subtle">{{ item.signalType || item.adviceType }}</div>
-              <div style="font-weight:700;margin-top:4px;">{{ item.title }}</div>
-            </div>
-            <button class="btn secondary" @click="removeMeetingAdvice(item.id)">删除</button>
-          </div>
-          <div class="hint" style="margin-top:8px;">{{ item.summary }}</div>
-          <div class="md" style="margin-top:8px;" v-html="renderMd(item.suggestion)"></div>
-          <div v-if="item.nextQuestion" class="hint" style="margin-top:8px;">建议追问：{{ item.nextQuestion }}</div>
-          <div v-if="item.analysisRecord" style="margin-top:10px;padding:10px;border:1px dashed var(--border-color);border-radius:8px;background:#f8fafc;">
-            <div style="font-weight:700;">本条分析记录</div>
-            <div class="subtle" style="margin-top:6px;">触发原因：{{ item.analysisRecord.triggerReason }}</div>
-            <div class="subtle" style="margin-top:6px;">困惑点：{{ item.analysisRecord.focusSpan }}</div>
-            <div class="subtle" style="margin-top:6px;">建议摘要：{{ item.analysisRecord.adviceSummary }}</div>
-            <div class="subtle" style="margin-top:6px;">是否联网：{{ item.analysisRecord.networkStatus }}</div>
-            <div class="subtle" style="margin-top:6px;">为什么联网：{{ item.analysisRecord.networkReason }}</div>
-            <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ item.analysisRecord.searchMode }}</div>
-            <div v-if="item.analysisRecord.searchQuery" class="subtle" style="margin-top:6px;">搜索词：{{ item.analysisRecord.searchQuery }}</div>
-          </div>
-          <div class="subtle" style="margin-top:8px;">{{ item.sourceNote }}</div>
-        </div>
-      </div>
-
-      <div class="card monitor">
-        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" @click="showProfilePanel = !showProfilePanel">
-          <span>同事画像 ({{ profileList.length }})</span>
-          <span style="font-size:12px;color:#94a3b8;">{{ showProfilePanel ? '收起 ▲' : '展开 ▼' }}</span>
-        </div>
-        <div v-if="showProfilePanel">
-          <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-            <button class="btn secondary" @click.stop="openCaptureProfileModal('create', 'manage')">手动新增画像</button>
-          </div>
-          <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无同事画像，请先手动新增，或在开始录屏时新建并选择。</div>
-          <div v-else class="profile-grid">
-            <div 
-              v-for="p in profileList" 
-              :key="p.slug" 
-              class="profile-card"
-              :class="{ active: selectedProfileSlug === p.slug }"
-              @click="loadProfileDetail(p.slug)"
-            >
-              <div class="profile-name">{{ p.name || p.speakerLabel }}</div>
-              <div class="profile-role">{{ p.role || '角色未知' }}</div>
-              <div class="profile-tags" v-if="p.tags">
-                <span v-for="tag in (p.tags.personality || []).slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
+              <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+                <button class="btn secondary" @click.stop="openCaptureProfileModal('create', 'manage')">手动新增画像</button>
               </div>
-              <div class="profile-impression" v-if="p.impression">{{ p.impression }}</div>
-              <div class="profile-meta">参会 {{ p.meeting_count || 0 }} 次</div>
-              <button class="btn-delete-sm" @click.stop="deleteProfileAction(p.slug)" title="删除画像">×</button>
-            </div>
-          </div>
-          <div v-if="profileDetail" class="profile-detail">
-            <div class="profile-detail-header">
-              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-                <h3 style="margin:0;">{{ profileDetail.name || profileDetail.speakerLabel }} — 画像详情</h3>
-                <div style="display:flex;gap:8px;align-items:center;">
-                  <template v-if="editingProfileName">
-                    <input
-                      v-model="editingProfileNameValue"
-                      @keyup.enter="saveProfileName"
-                      @keyup.escape="cancelEditProfileName"
-                      placeholder="输入画像名称"
-                      style="padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;min-width:220px;"
-                    />
-                    <button class="btn secondary" @click="cancelEditProfileName">取消</button>
-                    <button class="btn" @click="saveProfileName">保存名称</button>
-                  </template>
-                  <button v-else class="btn secondary" @click="startEditProfileName">修改名称</button>
+              <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无同事画像，请先手动新增，或在开始录屏时新建并选择。</div>
+              <div v-else class="profile-grid" :class="{ collapsed: !showProfilePanel }">
+                <div 
+                  v-for="p in profileList" 
+                  :key="p.slug" 
+                  class="profile-card"
+                  :class="{ active: selectedProfileSlug === p.slug, collapsed: !showProfilePanel }"
+                  @click="loadProfileDetail(p.slug)"
+                >
+                  <div class="profile-name">{{ p.name || p.speakerLabel }}</div>
+                  <div class="profile-role">{{ p.role || '角色未知' }}</div>
+                  <div class="profile-tags" v-if="showProfilePanel && p.tags">
+                    <span v-for="tag in (p.tags.personality || []).slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
+                  </div>
+                  <div class="profile-impression" v-if="showProfilePanel && p.impression">{{ p.impression }}</div>
+                  <div class="profile-meta" v-if="showProfilePanel">参会 {{ p.meeting_count || 0 }} 次</div>
+                  <button class="btn-delete-sm" @click.stop="deleteProfileAction(p.slug)" title="删除画像">×</button>
+                </div>
+              </div>
+              <div v-if="showProfilePanel && profileDetail" class="profile-detail">
+                <div class="profile-detail-header">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <h3 style="margin:0;">{{ profileDetail.name || profileDetail.speakerLabel }} — 画像详情</h3>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                      <template v-if="editingProfileName">
+                        <input
+                          v-model="editingProfileNameValue"
+                          @keyup.enter="saveProfileName"
+                          @keyup.escape="cancelEditProfileName"
+                          placeholder="输入画像名称"
+                          style="padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;min-width:220px;"
+                        />
+                        <button class="btn secondary" @click="cancelEditProfileName">取消</button>
+                        <button class="btn" @click="saveProfileName">保存名称</button>
+                      </template>
+                      <button v-else class="btn secondary" @click="startEditProfileName">修改名称</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="profile-section">
+                  <h4>Persona（性格与行为）</h4>
+                  <div class="md" v-html="renderMd(profileDetail.personaMd)"></div>
+                </div>
+                <div class="profile-section">
+                  <h4>Work（工作能力与方法）</h4>
+                  <div class="md" v-html="renderMd(profileDetail.workMd)"></div>
                 </div>
               </div>
             </div>
-            <div class="profile-section">
-              <h4>Persona（性格与行为）</h4>
-              <div class="md" v-html="renderMd(profileDetail.personaMd)"></div>
+          </div>
+
+          <div class="card monitor">
+            <div class="panel-title">运行日志</div>
+            <div class="pre" ref="logEl">{{ logs.length ? logs.join("\\n") : (loading ? "准备中..." : "暂无") }}</div>
+          </div>
+        </div>
+
+        <div class="monitor-side">
+          <div class="card monitor">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+              <span>会议建议</span>
+              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                <label class="subtle" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+                  <input type="checkbox" v-model="meetingAdvisorEnabled" />
+                  <span>启用主动建议</span>
+                </label>
+                <label class="subtle" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+                  <input type="checkbox" v-model="meetingAdvisorForceWebSearch" />
+                  <span>强制联网</span>
+                </label>
+                <button class="btn secondary" @click="requestMeetingAdviceManually()" :disabled="meetingAdvisorLoading">
+                  {{ meetingAdvisorLoading ? '获取中...' : '强制获取建议' }}
+                </button>
+                <div class="subtle">{{ meetingAdvisorLoading ? '判断中...' : (meetingAdviceItems.length + ' 条') }}</div>
+              </div>
             </div>
-            <div class="profile-section">
-              <h4>Work（工作能力与方法）</h4>
-              <div class="md" v-html="renderMd(profileDetail.workMd)"></div>
+            <div v-if="meetingAdvisorStatus" class="hint" style="margin-top:0;">{{ meetingAdvisorStatus }}</div>
+            <textarea
+              v-model="meetingAdviceManualInstruction"
+              placeholder="在此输入获取建议要求"
+              style="width:100%;min-height:110px;margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:8px;resize:vertical;font:inherit;line-height:1.6;"
+            ></textarea>
+            <div v-if="meetingAdviceItems.length === 0" class="hint">还没有触发会议建议。</div>
+            <div style="margin-top:12px;padding:12px;border:1px dashed var(--border-color);border-radius:10px;background:#f8fafc;">
+              <div style="font-weight:700;">最近一次分析结果</div>
+              <div class="subtle" style="margin-top:6px;">更新时间：{{ meetingAdvisorDebug.updatedAt || '暂无' }}</div>
+              <div v-if="meetingAdvisorDebug.skippedReason" class="hint" style="margin-top:8px;">未出建议原因：{{ meetingAdvisorDebug.skippedReason }}</div>
+              <div v-if="meetingAdvisorDebug.error" class="hint" style="margin-top:8px;color:#b91c1c;">错误：{{ meetingAdvisorDebug.error }}</div>
+              <div class="subtle" style="margin-top:10px;">触发原因：{{ getMeetingAdvisorTriggerReason() }}</div>
+              <div class="subtle" style="margin-top:6px;">困惑点：{{ getMeetingAdvisorFocusSpan() }}</div>
+              <div class="subtle" style="margin-top:6px;">手动要求：{{ getMeetingAdvisorManualInstruction() }}</div>
+              <div class="subtle" style="margin-top:6px;">建议摘要：{{ getMeetingAdvisorAdviceSummary() }}</div>
+              <div class="subtle" style="margin-top:10px;">是否联网：{{ getMeetingAdvisorNetworkStatus() }}</div>
+              <div class="subtle" style="margin-top:6px;">为什么联网：{{ getMeetingAdvisorSearchReason() }}</div>
+              <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ getMeetingAdvisorSearchMode() }}</div>
+              <div v-if="meetingAdvisorDebug.search && meetingAdvisorDebug.search.query" class="subtle" style="margin-top:6px;">搜索词：{{ meetingAdvisorDebug.search.query }}</div>
+              <div class="subtle" style="margin-top:10px;">最近片段</div>
+              <div class="pre" style="margin-top:6px;max-height:120px;">{{ meetingAdvisorDebug.recentLines.join('\\n') || '暂无' }}</div>
+            </div>
+            <div v-for="item in meetingAdviceItems" :key="item.id" style="margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:10px;background:#fff;">
+              <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+                <div>
+                  <div class="subtle">{{ item.signalType || item.adviceType }}</div>
+                  <div style="font-weight:700;margin-top:4px;">{{ item.title }}</div>
+                </div>
+                <button class="btn secondary" @click="removeMeetingAdvice(item.id)">删除</button>
+              </div>
+              <div class="hint" style="margin-top:8px;">{{ item.summary }}</div>
+              <div class="md" style="margin-top:8px;" v-html="renderMd(item.suggestion)"></div>
+              <div v-if="item.nextQuestion" class="hint" style="margin-top:8px;">建议追问：{{ item.nextQuestion }}</div>
+              <div v-if="item.analysisRecord" style="margin-top:10px;padding:10px;border:1px dashed var(--border-color);border-radius:8px;background:#f8fafc;">
+                <div style="font-weight:700;">本条分析记录</div>
+                <div class="subtle" style="margin-top:6px;">触发原因：{{ item.analysisRecord.triggerReason }}</div>
+                <div class="subtle" style="margin-top:6px;">困惑点：{{ item.analysisRecord.focusSpan }}</div>
+                <div class="subtle" style="margin-top:6px;">手动要求：{{ item.analysisRecord.manualInstruction || '暂无' }}</div>
+                <div class="subtle" style="margin-top:6px;">建议摘要：{{ item.analysisRecord.adviceSummary }}</div>
+                <div class="subtle" style="margin-top:6px;">是否联网：{{ item.analysisRecord.networkStatus }}</div>
+                <div class="subtle" style="margin-top:6px;">为什么联网：{{ item.analysisRecord.networkReason }}</div>
+                <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ item.analysisRecord.searchMode }}</div>
+                <div v-if="item.analysisRecord.searchQuery" class="subtle" style="margin-top:6px;">搜索词：{{ item.analysisRecord.searchQuery }}</div>
+              </div>
+              <div class="subtle" style="margin-top:8px;">{{ item.sourceNote }}</div>
             </div>
           </div>
         </div>
-      </div>
-
-      <div class="card monitor">
-        <div class="panel-title">运行日志</div>
-        <div class="pre" ref="logEl">{{ logs.length ? logs.join("\\n") : (loading ? "准备中..." : "暂无") }}</div>
       </div>
 
       <div 
@@ -1541,6 +1573,7 @@ const vm = createApp({
           </div>
         </div>
       </div>
+
     </div>
   `
 });

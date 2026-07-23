@@ -810,6 +810,7 @@ app.post("/api/meeting-advisor/advice", async (req, res) => {
       profileRole = "",
       pendingAdvice = [],
       webContext = [],
+      manualInstruction = "",
       forceWebSearch = false
     } = req.body || {};
 
@@ -823,6 +824,7 @@ app.post("/api/meeting-advisor/advice", async (req, res) => {
       profileRole: typeof profileRole === "string" ? profileRole : "",
       pendingAdviceDigest: buildAdviceDigest(pendingAdvice),
       webContext: normalizeWebContext(webContext),
+      manualInstruction: typeof manualInstruction === "string" ? manualInstruction : "",
       forceWebSearch: forceWebSearch === true
     });
 

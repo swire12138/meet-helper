@@ -129,6 +129,7 @@ function buildAdvisorMessages({
   profileRole,
   pendingAdviceDigest,
   webContext,
+  manualInstruction = "",
   enableSearch = false,
   forceWebSearch = false
 }) {
@@ -154,6 +155,7 @@ function buildAdvisorMessages({
         "不要写长报告，不要输出冗余铺垫。",
         "不要把重点放在提出问题上，重点是直接回答会议里卡住的点。",
         "你的回答必须紧贴会议里已经出现的那个困惑点，先解答那个困惑，再补充最有帮助的解决方案。",
+        "如果用户额外给了本次手动要求，要优先吸收这些要求来调整答案表达、侧重点和回答边界，但仍然要围绕当前会议内容作答。",
         "不要因为你觉得还能优化，就凭空制造一个会议里并不存在的问题来回答。",
         "你必须只输出 JSON，对象字段只能是：title, adviceType, summary, suggestion, nextQuestion, needWebSearch, searchQuery, sourceNote。",
         "title 是一句短标题。",
@@ -186,6 +188,7 @@ function buildAdvisorMessages({
         pendingAdviceDigest ? `最近已展示建议：${pendingAdviceDigest}` : "最近没有已展示建议",
         `触发信号：${signalType || "none"}`,
         `关注片段：${focusSpan || "未提供"}`,
+        manualInstruction ? `本次手动要求：${manualInstruction}` : "",
         "",
         "=== 最近上下文 ===",
         contextText,
@@ -268,6 +271,7 @@ export async function generateMeetingAdvice({
   profileRole = "",
   pendingAdviceDigest = "",
   webContext = [],
+  manualInstruction = "",
   forceWebSearch = false
 }) {
   const schemaHint = "{\"title\":\"...\",\"adviceType\":\"proposal\",\"summary\":\"...\",\"suggestion\":\"...\",\"nextQuestion\":\"...\",\"needWebSearch\":false,\"searchQuery\":\"\",\"sourceNote\":\"...\"}";
@@ -281,6 +285,7 @@ export async function generateMeetingAdvice({
     profileRole,
     pendingAdviceDigest: clipText(pendingAdviceDigest, 800),
     webContext,
+    manualInstruction: clipText(manualInstruction, 400),
     forceWebSearch
   };
   let parsed = forceWebSearch
