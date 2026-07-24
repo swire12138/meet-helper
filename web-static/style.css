@@ -327,6 +327,126 @@ body {
   top: 16px;
 }
 
+.meeting-advice-card {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.meeting-advice-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.meeting-advice-head-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.meeting-advice-title {
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.meeting-advice-summary {
+  margin-top: 8px;
+  margin-right: 8px;
+}
+
+.meeting-advice-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.meeting-advice-body {
+  margin-top: 8px;
+}
+
+.meeting-advice-analysis {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.meeting-debug-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.meeting-debug-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.meeting-debug-message {
+  margin-top: 10px;
+}
+
+.meeting-debug-error {
+  color: #b91c1c;
+}
+
+.meeting-debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.meeting-debug-item {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+}
+
+.meeting-debug-label {
+  font-size: 12px;
+  color: var(--text-placeholder);
+  margin-bottom: 4px;
+}
+
+.meeting-debug-value {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.meeting-debug-snippet {
+  margin-top: 10px;
+}
+
+@media (max-width: 640px) {
+  .meeting-advice-head {
+    flex-direction: column;
+  }
+
+  .meeting-advice-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .meeting-debug-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .floating-ball {
   position: fixed;
   right: 32px;

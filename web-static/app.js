@@ -36,6 +36,7 @@ const vm = createApp({
     const meetingAdvisorStatus = ref("");
     const meetingAdvisorEnabled = ref(true);
     const meetingAdvisorForceWebSearch = ref(false);
+    const expandedMeetingAdviceId = ref("");
     const meetingAdviceManualInstruction = ref("");
     const lastMeetingAdviceFingerprint = ref("");
     const meetingAdvisorDebug = ref({
@@ -606,6 +607,13 @@ const vm = createApp({
 
     function removeMeetingAdvice(id) {
       meetingAdviceItems.value = meetingAdviceItems.value.filter((item) => item.id !== id);
+      if (expandedMeetingAdviceId.value === id) {
+        expandedMeetingAdviceId.value = meetingAdviceItems.value[0]?.id || "";
+      }
+    }
+
+    function toggleMeetingAdviceExpand(id) {
+      expandedMeetingAdviceId.value = expandedMeetingAdviceId.value === id ? "" : id;
     }
 
     function buildForcedMeetingTrigger(recentLines, triggerData = null, manualInstruction = "") {
@@ -829,12 +837,14 @@ const vm = createApp({
             nextItem,
             ...meetingAdviceItems.value.filter((item, idx) => idx !== existingIndex)
           ].slice(0, 8);
+          expandedMeetingAdviceId.value = nextItem.id;
           meetingAdvisorStatus.value = "已更新同一困惑点的会议建议。";
         } else {
           meetingAdviceItems.value = [
             nextItem,
             ...meetingAdviceItems.value
           ].slice(0, 8);
+          expandedMeetingAdviceId.value = nextItem.id;
           meetingAdvisorStatus.value = "已生成一条新的会议建议。";
         }
       } catch (e) {
@@ -1271,6 +1281,7 @@ const vm = createApp({
       meetingAdvisorStatus,
       meetingAdvisorEnabled,
       meetingAdvisorForceWebSearch,
+      expandedMeetingAdviceId,
       meetingAdviceManualInstruction,
       meetingAdvisorDebug,
       showCaptureProfileModal,
@@ -1297,6 +1308,7 @@ const vm = createApp({
       getMeetingAdvisorManualInstruction,
       getTranscriptDisplay,
       removeMeetingAdvice,
+      toggleMeetingAdviceExpand,
       requestMeetingAdviceManually,
       speakerNameMap,
       profileList,
@@ -1476,45 +1488,84 @@ const vm = createApp({
               style="width:100%;min-height:110px;margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:8px;resize:vertical;font:inherit;line-height:1.6;"
             ></textarea>
             <div v-if="meetingAdviceItems.length === 0" class="hint">还没有触发会议建议。</div>
-            <div style="margin-top:12px;padding:12px;border:1px dashed var(--border-color);border-radius:10px;background:#f8fafc;">
-              <div style="font-weight:700;">最近一次分析结果</div>
-              <div class="subtle" style="margin-top:6px;">更新时间：{{ meetingAdvisorDebug.updatedAt || '暂无' }}</div>
-              <div v-if="meetingAdvisorDebug.skippedReason" class="hint" style="margin-top:8px;">未出建议原因：{{ meetingAdvisorDebug.skippedReason }}</div>
-              <div v-if="meetingAdvisorDebug.error" class="hint" style="margin-top:8px;color:#b91c1c;">错误：{{ meetingAdvisorDebug.error }}</div>
-              <div class="subtle" style="margin-top:10px;">触发原因：{{ getMeetingAdvisorTriggerReason() }}</div>
-              <div class="subtle" style="margin-top:6px;">困惑点：{{ getMeetingAdvisorFocusSpan() }}</div>
-              <div class="subtle" style="margin-top:6px;">手动要求：{{ getMeetingAdvisorManualInstruction() }}</div>
-              <div class="subtle" style="margin-top:6px;">建议摘要：{{ getMeetingAdvisorAdviceSummary() }}</div>
-              <div class="subtle" style="margin-top:10px;">是否联网：{{ getMeetingAdvisorNetworkStatus() }}</div>
-              <div class="subtle" style="margin-top:6px;">为什么联网：{{ getMeetingAdvisorSearchReason() }}</div>
-              <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ getMeetingAdvisorSearchMode() }}</div>
-              <div v-if="meetingAdvisorDebug.search && meetingAdvisorDebug.search.query" class="subtle" style="margin-top:6px;">搜索词：{{ meetingAdvisorDebug.search.query }}</div>
-              <div class="subtle" style="margin-top:10px;">最近片段</div>
-              <div class="pre" style="margin-top:6px;max-height:120px;">{{ meetingAdvisorDebug.recentLines.join('\\n') || '暂无' }}</div>
-            </div>
-            <div v-for="item in meetingAdviceItems" :key="item.id" style="margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:10px;background:#fff;">
-              <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
-                <div>
-                  <div class="subtle">{{ item.signalType || item.adviceType }}</div>
-                  <div style="font-weight:700;margin-top:4px;">{{ item.title }}</div>
+            <div class="meeting-debug-panel">
+              <div class="meeting-debug-header">
+                <div style="font-weight:700;">最近一次分析结果</div>
+                <div class="subtle">更新时间：{{ meetingAdvisorDebug.updatedAt || '暂无' }}</div>
+              </div>
+              <div v-if="meetingAdvisorDebug.skippedReason" class="hint meeting-debug-message">未出建议原因：{{ meetingAdvisorDebug.skippedReason }}</div>
+              <div v-if="meetingAdvisorDebug.error" class="hint meeting-debug-message meeting-debug-error">错误：{{ meetingAdvisorDebug.error }}</div>
+              <div class="meeting-debug-grid">
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">触发原因</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorTriggerReason() }}</div>
                 </div>
-                <button class="btn secondary" @click="removeMeetingAdvice(item.id)">删除</button>
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">困惑点</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorFocusSpan() }}</div>
+                </div>
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">手动要求</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorManualInstruction() }}</div>
+                </div>
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">建议摘要</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorAdviceSummary() }}</div>
+                </div>
               </div>
-              <div class="hint" style="margin-top:8px;">{{ item.summary }}</div>
-              <div class="md" style="margin-top:8px;" v-html="renderMd(item.suggestion)"></div>
-              <div v-if="item.nextQuestion" class="hint" style="margin-top:8px;">建议追问：{{ item.nextQuestion }}</div>
-              <div v-if="item.analysisRecord" style="margin-top:10px;padding:10px;border:1px dashed var(--border-color);border-radius:8px;background:#f8fafc;">
-                <div style="font-weight:700;">本条分析记录</div>
-                <div class="subtle" style="margin-top:6px;">触发原因：{{ item.analysisRecord.triggerReason }}</div>
-                <div class="subtle" style="margin-top:6px;">困惑点：{{ item.analysisRecord.focusSpan }}</div>
-                <div class="subtle" style="margin-top:6px;">手动要求：{{ item.analysisRecord.manualInstruction || '暂无' }}</div>
-                <div class="subtle" style="margin-top:6px;">建议摘要：{{ item.analysisRecord.adviceSummary }}</div>
-                <div class="subtle" style="margin-top:6px;">是否联网：{{ item.analysisRecord.networkStatus }}</div>
-                <div class="subtle" style="margin-top:6px;">为什么联网：{{ item.analysisRecord.networkReason }}</div>
-                <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ item.analysisRecord.searchMode }}</div>
-                <div v-if="item.analysisRecord.searchQuery" class="subtle" style="margin-top:6px;">搜索词：{{ item.analysisRecord.searchQuery }}</div>
+              <div class="meeting-debug-grid">
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">是否联网</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorNetworkStatus() }}</div>
+                </div>
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">为什么联网</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorSearchReason() }}</div>
+                </div>
+                <div class="meeting-debug-item">
+                  <div class="meeting-debug-label">本次搜索模式</div>
+                  <div class="meeting-debug-value">{{ getMeetingAdvisorSearchMode() }}</div>
+                </div>
+                <div v-if="meetingAdvisorDebug.search && meetingAdvisorDebug.search.query" class="meeting-debug-item">
+                  <div class="meeting-debug-label">搜索词</div>
+                  <div class="meeting-debug-value">{{ meetingAdvisorDebug.search.query }}</div>
+                </div>
               </div>
-              <div class="subtle" style="margin-top:8px;">{{ item.sourceNote }}</div>
+              <div class="meeting-debug-snippet">
+                <div class="meeting-debug-label">最近片段</div>
+                <div class="pre" style="margin-top:6px;max-height:120px;">{{ meetingAdvisorDebug.recentLines.join('\\n') || '暂无' }}</div>
+              </div>
+            </div>
+            <div v-for="item in meetingAdviceItems" :key="item.id" class="meeting-advice-card">
+              <div class="meeting-advice-head">
+                <div class="meeting-advice-head-main">
+                  <div class="subtle">{{ item.signalType || item.adviceType }}</div>
+                  <div class="meeting-advice-title">{{ item.title }}</div>
+                  <div class="hint meeting-advice-summary">{{ item.summary }}</div>
+                </div>
+                <div class="meeting-advice-actions">
+                  <button class="btn secondary" @click="toggleMeetingAdviceExpand(item.id)">
+                    {{ expandedMeetingAdviceId === item.id ? '折叠' : '展开' }}
+                  </button>
+                  <button class="btn secondary" @click="removeMeetingAdvice(item.id)">删除</button>
+                </div>
+              </div>
+              <div v-if="expandedMeetingAdviceId === item.id" class="meeting-advice-body">
+                <div class="md" style="margin-top:8px;" v-html="renderMd(item.suggestion)"></div>
+                <div v-if="item.nextQuestion" class="hint" style="margin-top:8px;">建议追问：{{ item.nextQuestion }}</div>
+                <div v-if="item.analysisRecord" class="meeting-advice-analysis">
+                  <div style="font-weight:700;">本条分析记录</div>
+                  <div class="subtle" style="margin-top:6px;">触发原因：{{ item.analysisRecord.triggerReason }}</div>
+                  <div class="subtle" style="margin-top:6px;">困惑点：{{ item.analysisRecord.focusSpan }}</div>
+                  <div class="subtle" style="margin-top:6px;">手动要求：{{ item.analysisRecord.manualInstruction || '暂无' }}</div>
+                  <div class="subtle" style="margin-top:6px;">建议摘要：{{ item.analysisRecord.adviceSummary }}</div>
+                  <div class="subtle" style="margin-top:6px;">是否联网：{{ item.analysisRecord.networkStatus }}</div>
+                  <div class="subtle" style="margin-top:6px;">为什么联网：{{ item.analysisRecord.networkReason }}</div>
+                  <div class="subtle" style="margin-top:6px;">本次搜索模式：{{ item.analysisRecord.searchMode }}</div>
+                  <div v-if="item.analysisRecord.searchQuery" class="subtle" style="margin-top:6px;">搜索词：{{ item.analysisRecord.searchQuery }}</div>
+                </div>
+                <div class="subtle" style="margin-top:8px;">{{ item.sourceNote }}</div>
+              </div>
             </div>
           </div>
         </div>
