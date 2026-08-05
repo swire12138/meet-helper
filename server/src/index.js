@@ -10,16 +10,10 @@ import { createQwenClient, getQwenConfig } from "./qwenClient.js";
 import { setupScreenCatchRoutes } from "../../screen-catch/api.js";
 import {
   buildProfileForSpeaker,
-  createManualProfile,
   mergeProfileForSpeaker,
-  upsertWorkProfileFromAnalysis,
-  loadProfileBySlug,
-  listProfiles,
-  updateProfileNameBySlug,
   updateSpeakerName,
   guessSpeakers,
-  extractSpeakersFromTranscript,
-  deleteProfile
+  extractSpeakersFromTranscript
 } from "./profileBuilder.js";
 import {
   allocateChatUserId,
@@ -32,7 +26,6 @@ import {
   isValidChatUserId
 } from "./chatStore.js";
 import { getOrBuildUserProfile, loadStoredUserProfile } from "./userProfile.js";
-import { buildChatSystemPrompt } from "./profilePrompts.js";
 import { extractLikelyJsonObject, safeJsonParse } from "./json.js";
 import {
   clearTemporaryPreferenceData,
@@ -40,6 +33,21 @@ import {
   removeTemporaryPreferenceItem
 } from "./sessionPreferences.js";
 import { detectMeetingAdviceTrigger, generateMeetingAdvice } from "./meetingAdvisor.js";
+import {
+  buildExpertChatSystemPrompt,
+  buildExpertQaContext,
+  createManualExpert,
+  deleteExpertMeeting,
+  deleteExpert,
+  ingestExpertMeetingKnowledge,
+  listExpertMeetings,
+  listExperts,
+  loadExpertBySlug,
+  loadExpertMeetingDetail,
+  moveMeetingToExpert,
+  retractExpertMeeting,
+  updateExpertNameBySlug
+} from "./expertKnowledge.js";
 
 // 配置日志同时输出到文件
 const logPath = path.resolve(process.cwd(), "../../screen-catch", "data", "server.log");
@@ -161,6 +169,34 @@ function normalizeWebContext(value) {
     })
     .filter(Boolean)
     .slice(0, 5);
+}
+
+function loadAgentProfileBySlug(slug) {
+  return loadExpertBySlug(slug);
+}
+
+function listAgentProfiles() {
+  return listExperts();
+}
+
+async function buildQuestionAwareSystemPrompt(profile, messages, userProfileData) {
+  const basePrompt = buildExpertChatSystemPrompt(profile, { userProfileData });
+  const latestUserMessage = [...messages].reverse().find((item) => item.role === "user" && typeof item.content === "string" && item.content.trim());
+  if (!latestUserMessage?.content?.trim()) {
+    return basePrompt;
+  }
+
+  const contextResult = await buildExpertQaContext(profile.slug, latestUserMessage.content);
+  if (!contextResult.ok || !contextResult.data) {
+    return basePrompt;
+  }
+
+  return [
+    basePrompt,
+    "",
+    "## 当前问题动态上下文",
+    JSON.stringify(contextResult.data, null, 2)
+  ].join("\n");
 }
 
 async function completeJsonObject(messages, { temperature = 0.2, maxTokens } = {}) {
@@ -469,7 +505,7 @@ app.post('/api/analyze-case', async (req, res) => {
     const fullTranscript = [contextTranscriptText, newTranscript].filter(Boolean).join("\n");
     const analysisPromise = analyzeCaseContent(validImages, newTranscript, contextTranscriptText, previousAnalysis);
     let profileUpdates = [];
-    let profiles = listProfiles();
+    let profiles = listAgentProfiles();
     let profileSync = { attempted: false, updated: false, skippedReason: "" };
 
     console.log(`[profile] newTranscript length=${newTranscript.length}, contextLength=${(contextTranscriptText||'').length}, fullLength=${fullTranscript.length}`);
@@ -479,58 +515,52 @@ app.post('/api/analyze-case', async (req, res) => {
       console.log(`[profile] newTranscript first 200 chars: ${newTranscript.slice(0, 200)}`);
     }
     const profilePromise = (async () => {
-      if (!newTranscript.trim()) {
-        profileSync.skippedReason = "empty_new_transcript";
-        return;
-      }
-
       if (!targetProfileSlug) {
         profileSync.skippedReason = "missing_target_profile";
         return;
       }
 
-      const targetProfile = loadProfileBySlug(targetProfileSlug);
-      if (!targetProfile) {
-        profileSync.skippedReason = "target_profile_not_found";
+      const targetExpert = loadAgentProfileBySlug(targetProfileSlug);
+      if (!targetExpert) {
+        profileSync.skippedReason = "target_expert_not_found";
         return;
       }
 
       const newLineCount = newTranscript.split("\n").filter(Boolean).length;
-      const shouldSyncProfiles = isFinal || newLineCount >= 2 || newTranscript.length >= 120;
+      const fullLineCount = fullTranscript.split("\n").filter(Boolean).length;
+      const hasEnoughIncrement = newTranscript.length >= 120 || newLineCount >= 2;
+      const hasEnoughWindow = fullTranscript.trim() && (fullTranscript.length >= 120 || fullLineCount >= 2);
+      const shouldSyncProfiles = hasEnoughIncrement || hasEnoughWindow;
       if (!shouldSyncProfiles) {
-        profileSync.skippedReason = "increment_too_small";
+        profileSync.skippedReason = isFinal ? "final_transcript_too_small" : "increment_too_small";
         return;
       }
 
       profileSync.attempted = true;
       const analysis = await analysisPromise;
-      console.log(`[profile] Updating selected profile ${targetProfile.slug} (${targetProfile.name}) from analysis...`);
-      const result = await upsertWorkProfileFromAnalysis(
-        { profileSlug: targetProfileSlug, speakerLabel: targetProfile.name || targetProfile.speakerLabel || "当前同事" },
+      console.log(`[expert] ingest meeting knowledge to ${targetExpert.slug} (${targetExpert.name})`);
+      const result = await ingestExpertMeetingKnowledge({
+        expertSlug: targetProfileSlug,
+        meetingId: sessionId,
+        transcriptText: fullTranscript,
+        contextTranscriptText: contextTranscriptText || "",
+        images: validImages,
         analysis,
-        newTranscript,
-        validImages.length
-      );
+        importanceLevel: isFinal ? "high" : "medium",
+        isFinal
+      });
 
-      profileUpdates = [
-        result.ok && result.data
-          ? {
-              speakerLabel: result.data.speakerLabel || targetProfile.name || "",
-              slug: result.data.slug,
-              name: result.data.name,
-              role: result.data.role,
-              merged: Boolean(result.merged),
-              error: ""
-            }
-          : {
-              speakerLabel: targetProfile.name || "",
-              slug: targetProfile.slug,
-              error: result.error || "unknown_profile_error",
-              merged: false
-            }
-      ];
+      profileUpdates = [{
+        speakerLabel: targetExpert.name || "",
+        slug: targetExpert.slug,
+        name: result.ok ? (result.data?.expert?.name || targetExpert.name) : targetExpert.name,
+        role: result.ok ? (result.data?.expert?.role || targetExpert.role || "") : (targetExpert.role || ""),
+        merged: result.ok,
+        error: result.ok ? "" : (result.error || "expert_ingest_failed"),
+        meetingId: result.ok ? result.data?.meeting?.meetingId || sessionId : sessionId
+      }];
       profileSync.updated = profileUpdates.some((item) => !item.error);
-      profiles = listProfiles();
+      profiles = listAgentProfiles();
     })();
 
     const [analysis] = await Promise.all([analysisPromise, profilePromise]);
@@ -556,7 +586,7 @@ app.post('/api/analyze-case', async (req, res) => {
 
 app.get("/api/profiles", (req, res) => {
   try {
-    const profiles = listProfiles();
+    const profiles = listAgentProfiles();
     res.json({ ok: true, data: profiles });
   } catch (e) {
     res.status(500).json({ ok: false, error: "server_error" });
@@ -565,8 +595,8 @@ app.get("/api/profiles", (req, res) => {
 
 app.post("/api/profiles/manual", (req, res) => {
   try {
-    const { name, role } = req.body;
-    const result = createManualProfile(name, role);
+    const { name, role, description = "" } = req.body;
+    const result = createManualExpert(name, role, description);
     if (!result.ok) {
       return res.status(400).json(result);
     }
@@ -580,7 +610,7 @@ app.post("/api/profiles/manual", (req, res) => {
 app.post("/api/profiles/rename", (req, res) => {
   try {
     const { slug, name } = req.body;
-    const result = updateProfileNameBySlug(slug, name);
+    const result = updateExpertNameBySlug(slug, name);
     if (!result.ok) {
       return res.status(result.error === "not_found" ? 404 : 400).json(result);
     }
@@ -593,11 +623,105 @@ app.post("/api/profiles/rename", (req, res) => {
 
 app.get("/api/profiles/:slug", (req, res) => {
   try {
-    const profile = loadProfileBySlug(req.params.slug);
+    const profile = loadAgentProfileBySlug(req.params.slug);
     if (!profile) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, data: profile });
   } catch (e) {
     res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.get("/api/profiles/:slug/meetings", (req, res) => {
+  try {
+    const expert = loadAgentProfileBySlug(req.params.slug);
+    if (!expert) return res.status(404).json({ ok: false, error: "not_found" });
+    res.json({ ok: true, data: listExpertMeetings(req.params.slug) });
+  } catch (e) {
+    console.error("List expert meetings error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.get("/api/profiles/:slug/meetings/:meetingId", (req, res) => {
+  try {
+    const expert = loadAgentProfileBySlug(req.params.slug);
+    if (!expert) return res.status(404).json({ ok: false, error: "not_found" });
+    const detail = loadExpertMeetingDetail(req.params.slug, req.params.meetingId);
+    if (!detail) return res.status(404).json({ ok: false, error: "meeting_not_found" });
+    res.json({ ok: true, data: detail });
+  } catch (e) {
+    console.error("Load expert meeting detail error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/profiles/:slug/meetings/:meetingId/retract", (req, res) => {
+  try {
+    const result = retractExpertMeeting({
+      expertSlug: req.params.slug,
+      meetingId: req.params.meetingId,
+      reason: typeof req.body?.reason === "string" ? req.body.reason : ""
+    });
+    if (!result.ok) {
+      return res.status(result.error === "meeting_not_found" ? 404 : 400).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Retract expert meeting error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.delete("/api/profiles/:slug/meetings/:meetingId", (req, res) => {
+  try {
+    const result = deleteExpertMeeting({
+      expertSlug: req.params.slug,
+      meetingId: req.params.meetingId,
+      reason: typeof req.body?.reason === "string" ? req.body.reason : "manual_delete_from_ui"
+    });
+    if (!result.ok) {
+      return res.status(result.error === "meeting_not_found" ? 404 : 400).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Delete expert meeting error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/profiles/move-meeting", (req, res) => {
+  try {
+    const { meetingId, fromExpertSlug, toExpertSlug, reason = "" } = req.body || {};
+    const result = moveMeetingToExpert({
+      meetingId,
+      fromExpertSlug,
+      toExpertSlug,
+      reason
+    });
+    if (!result.ok) {
+      return res.status(result.error?.includes("not_found") ? 404 : 400).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Move expert meeting error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
+  }
+});
+
+app.post("/api/profiles/:slug/qa-context", async (req, res) => {
+  try {
+    const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+    if (!question) {
+      return res.status(400).json({ ok: false, error: "missing_question" });
+    }
+    const result = await buildExpertQaContext(req.params.slug, question);
+    if (!result.ok) {
+      return res.status(result.error === "expert_not_found" ? 404 : 400).json(result);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error("Build expert qa context error:", e);
+    res.status(500).json({ ok: false, error: "server_error", message: e.message });
   }
 });
 
@@ -757,7 +881,7 @@ app.get("/api/chat-admin/users/:userId/profile", async (req, res) => {
 
 app.delete("/api/profiles/:slug", (req, res) => {
   try {
-    const result = deleteProfile(req.params.slug);
+    const result = deleteExpert(req.params.slug);
     if (!result.ok) return res.status(404).json(result);
     res.json(result);
   } catch (e) {
@@ -914,7 +1038,7 @@ app.post("/api/chat", async (req, res) => {
       return res.end();
     }
 
-    const profile = loadProfileBySlug(slug);
+    const profile = loadAgentProfileBySlug(slug);
     const t2 = Date.now();
     console.log(`[Chat] 加载画像完成: ${t2 - t1}ms`);
 
@@ -927,7 +1051,7 @@ app.post("/api/chat", async (req, res) => {
     const userProfileData = chatUserId && isValidChatUserId(chatUserId)
       ? loadStoredUserProfile(chatUserId)
       : null;
-    const systemPrompt = buildChatSystemPrompt(profile, { userProfileData });
+    const systemPrompt = await buildQuestionAwareSystemPrompt(profile, normalizedMessages, userProfileData);
 
     const t3 = Date.now();
     console.log(`[Chat] 构建提示词完成: ${t3 - t2}ms`);
@@ -998,7 +1122,7 @@ app.post("/api/chat/spectator", async (req, res) => {
     const { slug, messages, draftMessage = "", pendingSuggestions = [], manual = false } = req.body || {};
     if (!slug) return res.status(400).json({ ok: false, error: "missing_slug" });
 
-    const profile = loadProfileBySlug(slug);
+    const profile = loadAgentProfileBySlug(slug);
     if (!profile) return res.status(404).json({ ok: false, error: "profile_not_found" });
 
     const normalizedMessages = normalizeChatMessages(messages);
@@ -1065,7 +1189,7 @@ app.post("/api/chat/autopilot/step", async (req, res) => {
       return;
     }
 
-    const profile = loadProfileBySlug(slug);
+    const profile = loadAgentProfileBySlug(slug);
     if (!profile) {
       res.statusCode = 404;
       res.end("profile_not_found");
@@ -1109,7 +1233,7 @@ app.post("/api/chat/autopilot/report", async (req, res) => {
       return;
     }
 
-    const profile = loadProfileBySlug(slug);
+    const profile = loadAgentProfileBySlug(slug);
     if (!profile) {
       res.statusCode = 404;
       res.end("profile_not_found");

@@ -18,6 +18,15 @@ const vm = createApp({
     const profileList = ref([]);
     const selectedProfileSlug = ref(null);
     const profileDetail = ref(null);
+    const profileMeetingList = ref([]);
+    const profileMeetingLoading = ref(false);
+    const expandedProfileMeetingId = ref("");
+    const profileMeetingDetailLoadingId = ref("");
+    const profileMeetingDetailMap = ref({});
+    const retractingMeetingId = ref("");
+    const movingMeetingId = ref("");
+    const moveMeetingTargetSlug = ref("");
+    const movingMeetingLoading = ref(false);
     const editingSpeaker = ref(null);
     const editingName = ref("");
     const showProfilePanel = ref(false);
@@ -66,6 +75,15 @@ const vm = createApp({
         if (!el) return;
         el.scrollTop = el.scrollHeight;
       });
+    }
+
+    function getProfileSyncSkippedReasonText(reason) {
+      if (!reason) return "未知原因";
+      if (reason === "missing_target_profile") return "当前没有选中目标专家";
+      if (reason === "target_expert_not_found") return "目标专家不存在";
+      if (reason === "increment_too_small") return "本轮新增转写过短，暂不更新";
+      if (reason === "final_transcript_too_small") return "最终转写内容过短，暂不更新";
+      return reason;
     }
 
     function renderMd(md) {
@@ -199,24 +217,88 @@ const vm = createApp({
     }
 
     async function loadProfileDetail(slug) {
+      profileMeetingLoading.value = true;
+      expandedProfileMeetingId.value = "";
+      profileMeetingDetailLoadingId.value = "";
+      profileMeetingDetailMap.value = {};
       try {
-        const r = await fetch(`/api/profiles/${slug}`);
-        const res = await r.json();
+        const [profileRes, meetingsRes] = await Promise.all([
+          fetch(`/api/profiles/${slug}`),
+          fetch(`/api/profiles/${slug}/meetings`)
+        ]);
+        const res = await profileRes.json();
+        const meetingPayload = await meetingsRes.json();
         if (res.ok) {
           profileDetail.value = res.data;
+          profileMeetingList.value = meetingPayload.ok ? (meetingPayload.data || []) : [];
           selectedProfileSlug.value = slug;
           editingProfileName.value = false;
           editingProfileNameValue.value = res.data?.name || "";
         }
       } catch {}
+      finally {
+        profileMeetingLoading.value = false;
+      }
+    }
+
+    function getProfileMeetingDetail(meetingId) {
+      return profileMeetingDetailMap.value[meetingId] || null;
+    }
+
+    function getProfileMeetingSummaryItems(meetingId, key) {
+      const items = profileMeetingDetailMap.value[meetingId]?.summary?.[key];
+      return Array.isArray(items) ? items : [];
+    }
+
+    function formatDateTimeText(value) {
+      if (!value || typeof value !== "string") return "暂无";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString("zh-CN", { hour12: false });
+    }
+
+    async function loadProfileMeetingDetail(meetingId) {
+      if (!profileDetail.value?.slug || !meetingId) return null;
+      if (profileMeetingDetailMap.value[meetingId]) return profileMeetingDetailMap.value[meetingId];
+      profileMeetingDetailLoadingId.value = meetingId;
+      try {
+        const r = await fetch(`/api/profiles/${profileDetail.value.slug}/meetings/${meetingId}`);
+        const res = await r.json();
+        if (!r.ok || !res.ok) {
+          pushLog(`知识会详情加载失败: ${res?.error || `http_${r.status}`}`);
+          return null;
+        }
+        profileMeetingDetailMap.value = {
+          ...profileMeetingDetailMap.value,
+          [meetingId]: res.data || null
+        };
+        return res.data || null;
+      } catch (e) {
+        pushLog(`知识会详情请求出错: ${e?.message || "network_error"}`);
+        return null;
+      } finally {
+        if (profileMeetingDetailLoadingId.value === meetingId) {
+          profileMeetingDetailLoadingId.value = "";
+        }
+      }
+    }
+
+    async function toggleProfileMeetingExpand(meetingId) {
+      if (!meetingId) return;
+      if (expandedProfileMeetingId.value === meetingId) {
+        expandedProfileMeetingId.value = "";
+        return;
+      }
+      expandedProfileMeetingId.value = meetingId;
+      await loadProfileMeetingDetail(meetingId);
     }
 
     async function deleteProfileAction(slug) {
       const profile = profileList.value.find((item) => item.slug === slug);
       const profileName = profile?.name || profile?.speakerLabel || slug;
-      const firstConfirm = window.confirm(`确定要删除画像「${profileName}」吗？`);
+      const firstConfirm = window.confirm(`确定要删除专家画像「${profileName}」吗？`);
       if (!firstConfirm) return;
-      const secondConfirm = window.confirm(`删除后将无法恢复。\n请再次确认删除画像「${profileName}」。`);
+      const secondConfirm = window.confirm(`删除后将无法恢复。\n请再次确认删除专家画像「${profileName}」。`);
       if (!secondConfirm) return;
       try {
         const r = await fetch(`/api/profiles/${slug}`, { method: "DELETE" });
@@ -230,7 +312,7 @@ const vm = createApp({
           if (currentCaptureProfileSlug.value === slug) {
             currentCaptureProfileSlug.value = null;
           }
-          pushLog("已删除同事画像");
+          pushLog("已删除专家画像");
         }
       } catch {}
     }
@@ -263,16 +345,110 @@ const vm = createApp({
         });
         const res = await r.json();
         if (!r.ok || !res.ok) {
-          pushLog(`画像改名失败: ${res?.error || `http_${r.status}`}`);
+          pushLog(`专家改名失败: ${res?.error || `http_${r.status}`}`);
           return;
         }
-        pushLog(`已将画像改名为「${editingProfileNameValue.value.trim()}」`);
+        pushLog(`已将专家改名为「${editingProfileNameValue.value.trim()}」`);
         await loadProfileList();
         await loadProfileDetail(profileDetail.value.slug);
       } catch (e) {
-        pushLog(`画像改名请求出错: ${e?.message || "network_error"}`);
+        pushLog(`专家改名请求出错: ${e?.message || "network_error"}`);
       } finally {
         editingProfileName.value = false;
+      }
+    }
+
+    async function retractProfileMeeting(meetingId) {
+      const meeting = profileMeetingList.value.find((item) => item.meetingId === meetingId);
+      if (!profileDetail.value?.slug || !meetingId) return;
+      const confirmed = window.confirm(`确定要从当前专家中抽离会议「${meeting?.title || meetingId}」吗？`);
+      if (!confirmed) return;
+      retractingMeetingId.value = meetingId;
+      try {
+        const r = await fetch(`/api/profiles/${profileDetail.value.slug}/meetings/${meetingId}/retract`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "manual_retract_from_ui" })
+        });
+        const res = await r.json();
+        if (!r.ok || !res.ok) {
+          pushLog(`会议抽离失败: ${res?.error || `http_${r.status}`}`);
+          return;
+        }
+        pushLog(`已从当前专家抽离会议：${meeting?.title || meetingId}`);
+        await loadProfileList();
+        await loadProfileDetail(profileDetail.value.slug);
+      } catch (e) {
+        pushLog(`会议抽离请求出错: ${e?.message || "network_error"}`);
+      } finally {
+        retractingMeetingId.value = "";
+      }
+    }
+
+    async function deleteProfileMeeting(meetingId) {
+      const meeting = profileMeetingList.value.find((item) => item.meetingId === meetingId);
+      if (!profileDetail.value?.slug || !meetingId) return;
+      const confirmed = window.confirm(`确定要删除已抽离会议「${meeting?.title || meetingId}」吗？删除后不可恢复。`);
+      if (!confirmed) return;
+      retractingMeetingId.value = meetingId;
+      try {
+        const r = await fetch(`/api/profiles/${profileDetail.value.slug}/meetings/${meetingId}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "manual_delete_retracted_meeting_from_ui" })
+        });
+        const res = await r.json();
+        if (!r.ok || !res.ok) {
+          pushLog(`会议删除失败: ${res?.error || `http_${r.status}`}`);
+          return;
+        }
+        pushLog(`已删除抽离会议：${meeting?.title || meetingId}`);
+        await loadProfileList();
+        await loadProfileDetail(profileDetail.value.slug);
+      } catch (e) {
+        pushLog(`会议删除请求出错: ${e?.message || "network_error"}`);
+      } finally {
+        retractingMeetingId.value = "";
+      }
+    }
+
+    function beginMoveProfileMeeting(meetingId) {
+      movingMeetingId.value = meetingId;
+      moveMeetingTargetSlug.value = profileList.value.find((item) => item.slug !== profileDetail.value?.slug)?.slug || "";
+    }
+
+    function cancelMoveProfileMeeting() {
+      movingMeetingId.value = "";
+      moveMeetingTargetSlug.value = "";
+    }
+
+    async function confirmMoveProfileMeeting(meetingId) {
+      if (!profileDetail.value?.slug || !meetingId || !moveMeetingTargetSlug.value) return;
+      movingMeetingLoading.value = true;
+      try {
+        const r = await fetch("/api/profiles/move-meeting", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            meetingId,
+            fromExpertSlug: profileDetail.value.slug,
+            toExpertSlug: moveMeetingTargetSlug.value,
+            reason: "manual_move_from_ui"
+          })
+        });
+        const res = await r.json();
+        if (!r.ok || !res.ok) {
+          pushLog(`会议迁移失败: ${res?.error || `http_${r.status}`}`);
+          return;
+        }
+        pushLog(`已迁移会议到专家：${getProfileNameBySlug(moveMeetingTargetSlug.value) || moveMeetingTargetSlug.value}`);
+        cancelMoveProfileMeeting();
+        await loadProfileList();
+        await loadProfileDetail(profileDetail.value.slug);
+      } catch (e) {
+        pushLog(`会议迁移请求出错: ${e?.message || "network_error"}`);
+      } finally {
+        movingMeetingLoading.value = false;
       }
     }
 
@@ -366,7 +542,7 @@ const vm = createApp({
             return;
           }
           targetSlug = res.data.slug;
-          pushLog(`已新建画像：${res.data.name}`);
+          pushLog(`已新建专家：${res.data.name}`);
           await loadProfileList();
         } catch (e) {
           captureProfileError.value = e?.message || "network_error";
@@ -375,7 +551,7 @@ const vm = createApp({
       }
 
       if (!targetSlug) {
-        captureProfileError.value = "请选择本次要更新的画像";
+        captureProfileError.value = "请选择本次要更新的专家";
         return;
       }
 
@@ -402,7 +578,7 @@ const vm = createApp({
       const MM = String(d.getMinutes()).padStart(2, '0');
       const SS = String(d.getSeconds()).padStart(2, '0');
       currentSessionId = `meeting-${yyyy}${mm}${dd}-${HH}${MM}${SS}`;
-      pushLog(`本次录屏将更新画像：${getProfileNameBySlug(targetSlug) || targetSlug}`);
+      pushLog(`本次录屏将更新专家：${getProfileNameBySlug(targetSlug) || targetSlug}`);
       await startCapture();
     }
 
@@ -1208,11 +1384,11 @@ const vm = createApp({
           }
           if (res.data.profileSync) {
             if (res.data.profileSync.updated) {
-              pushLog("同事画像已随本轮增量分析同步更新");
+              pushLog("专家知识画像已随本轮增量分析同步更新");
             } else if (res.data.profileSync.skippedReason) {
-              pushLog(`同事画像本轮未更新：${res.data.profileSync.skippedReason}`);
+              pushLog(`专家知识画像本轮未更新：${getProfileSyncSkippedReasonText(res.data.profileSync.skippedReason)}`);
             } else if (res.data.profileSync.attempted) {
-              pushLog("同事画像本轮已尝试同步，但没有产生有效更新");
+              pushLog("专家知识画像本轮已尝试同步，但没有产生有效更新");
             }
           }
           pushLog(isFinal ? "最终案例分析完成" : "增量案例分析完成");
@@ -1294,6 +1470,7 @@ const vm = createApp({
       currentCaptureProfileSlug,
       formatBytes,
       renderMd,
+      getProfileSyncSkippedReasonText,
       onPickFile,
       onUpload,
       onReset,
@@ -1314,6 +1491,15 @@ const vm = createApp({
       profileList,
       selectedProfileSlug,
       profileDetail,
+      profileMeetingList,
+      profileMeetingLoading,
+      expandedProfileMeetingId,
+      profileMeetingDetailLoadingId,
+      profileMeetingDetailMap,
+      retractingMeetingId,
+      movingMeetingId,
+      moveMeetingTargetSlug,
+      movingMeetingLoading,
       editingProfileName,
       editingProfileNameValue,
       editingSpeaker,
@@ -1326,7 +1512,16 @@ const vm = createApp({
       getDetectedSpeakers,
       guessSpeakerNames,
       loadProfileDetail,
+      getProfileMeetingDetail,
+      getProfileMeetingSummaryItems,
+      formatDateTimeText,
+      toggleProfileMeetingExpand,
       deleteProfileAction,
+      deleteProfileMeeting,
+      retractProfileMeeting,
+      beginMoveProfileMeeting,
+      cancelMoveProfileMeeting,
+      confirmMoveProfileMeeting,
       startEditProfileName,
       cancelEditProfileName,
       saveProfileName,
@@ -1347,7 +1542,7 @@ const vm = createApp({
         </div>
         <div style="display:flex;gap:12px;align-items:center;">
           <div class="subtle">上传会议转写文档（txt/md）→ 生成分板块技术报告</div>
-          <a href="/chat.html" class="btn secondary">同事画像对话</a>
+          <a href="/chat.html" class="btn secondary">专家画像对话</a>
           <a href="/chat-admin.html" class="btn secondary">编号后台</a>
         </div>
       </div>
@@ -1391,21 +1586,21 @@ const vm = createApp({
           <div class="card monitor">
             <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
               <span>实时转写</span>
-              <div class="subtle">当前更新画像：{{ currentCaptureProfileSlug ? getProfileNameBySlug(currentCaptureProfileSlug) : '未选择' }}</div>
+              <div class="subtle">当前更新专家：{{ currentCaptureProfileSlug ? getProfileNameBySlug(currentCaptureProfileSlug) : '未选择' }}</div>
             </div>
             <div class="pre">{{ getTranscriptDisplay() }}</div>
           </div>
 
           <div class="card monitor">
             <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" @click="showProfilePanel = !showProfilePanel">
-              <span>同事画像 ({{ profileList.length }})</span>
+              <span>专家画像 ({{ profileList.length }})</span>
               <span style="font-size:12px;color:#94a3b8;">{{ showProfilePanel ? '收起 ▲' : '展开 ▼' }}</span>
             </div>
             <div>
               <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-                <button class="btn secondary" @click.stop="openCaptureProfileModal('create', 'manage')">手动新增画像</button>
+                <button class="btn secondary" @click.stop="openCaptureProfileModal('create', 'manage')">手动新增专家</button>
               </div>
-              <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无同事画像，请先手动新增，或在开始录屏时新建并选择。</div>
+              <div v-if="profileList.length === 0" class="hint" style="padding:12px 0;">暂无专家画像，请先手动新增，或在开始录屏时新建并选择。</div>
               <div v-else class="profile-grid" :class="{ collapsed: !showProfilePanel }">
                 <div 
                   v-for="p in profileList" 
@@ -1420,21 +1615,21 @@ const vm = createApp({
                     <span v-for="tag in (p.tags.personality || []).slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
                   </div>
                   <div class="profile-impression" v-if="showProfilePanel && p.impression">{{ p.impression }}</div>
-                  <div class="profile-meta" v-if="showProfilePanel">参会 {{ p.meeting_count || 0 }} 次</div>
-                  <button class="btn-delete-sm" @click.stop="deleteProfileAction(p.slug)" title="删除画像">×</button>
+                  <div class="profile-meta" v-if="showProfilePanel">知识会 {{ p.meeting_count || 0 }} 次</div>
+                  <button class="btn-delete-sm" @click.stop="deleteProfileAction(p.slug)" title="删除专家">×</button>
                 </div>
               </div>
               <div v-if="showProfilePanel && profileDetail" class="profile-detail">
                 <div class="profile-detail-header">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-                    <h3 style="margin:0;">{{ profileDetail.name || profileDetail.speakerLabel }} — 画像详情</h3>
+                    <h3 style="margin:0;">{{ profileDetail.name || profileDetail.speakerLabel }} — 专家详情</h3>
                     <div style="display:flex;gap:8px;align-items:center;">
                       <template v-if="editingProfileName">
                         <input
                           v-model="editingProfileNameValue"
                           @keyup.enter="saveProfileName"
                           @keyup.escape="cancelEditProfileName"
-                          placeholder="输入画像名称"
+                          placeholder="输入专家名称"
                           style="padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;min-width:220px;"
                         />
                         <button class="btn secondary" @click="cancelEditProfileName">取消</button>
@@ -1445,12 +1640,122 @@ const vm = createApp({
                   </div>
                 </div>
                 <div class="profile-section">
-                  <h4>Persona（性格与行为）</h4>
+                  <h4>核心原则与判断框架</h4>
                   <div class="md" v-html="renderMd(profileDetail.personaMd)"></div>
                 </div>
                 <div class="profile-section">
-                  <h4>Work（工作能力与方法）</h4>
+                  <h4>领域与近期知识结构</h4>
                   <div class="md" v-html="renderMd(profileDetail.workMd)"></div>
+                </div>
+                <div class="profile-section">
+                  <h4>知识会记录</h4>
+                  <div v-if="profileMeetingLoading" class="hint">加载中...</div>
+                  <div v-else-if="profileMeetingList.length === 0" class="hint">当前还没有归档到这个专家下的知识会。</div>
+                  <div v-else class="expert-meeting-list">
+                    <div v-for="meeting in profileMeetingList" :key="meeting.meetingId" class="expert-meeting-item">
+                      <div class="expert-meeting-head">
+                        <div class="expert-meeting-main">
+                          <div class="expert-meeting-title">{{ meeting.title || meeting.meetingId }}</div>
+                          <div class="expert-meeting-meta">
+                            <span>状态：{{ meeting.status || 'active' }}</span>
+                            <span>重要度：{{ meeting.importanceLevel || 'medium' }}</span>
+                            <span>转写 {{ meeting.transcriptLineCount || 0 }} 行</span>
+                          </div>
+                        </div>
+                        <div class="expert-meeting-side">
+                          <div class="expert-meeting-actions">
+                            <button class="btn secondary" @click="toggleProfileMeetingExpand(meeting.meetingId)">
+                              {{ expandedProfileMeetingId === meeting.meetingId ? '收起' : (profileMeetingDetailLoadingId === meeting.meetingId ? '展开中...' : '展开') }}
+                            </button>
+                            <button class="btn secondary" @click="retractProfileMeeting(meeting.meetingId)" :disabled="retractingMeetingId === meeting.meetingId || meeting.status === 'retracted'">
+                              {{ retractingMeetingId === meeting.meetingId ? '抽离中...' : (meeting.status === 'retracted' ? '已抽离' : '抽离') }}
+                            </button>
+                            <button
+                              class="btn secondary"
+                              @click="meeting.status === 'retracted'
+                                ? deleteProfileMeeting(meeting.meetingId)
+                                : (movingMeetingId === meeting.meetingId
+                                  ? cancelMoveProfileMeeting()
+                                  : beginMoveProfileMeeting(meeting.meetingId))"
+                              :disabled="meeting.status === 'retracted'
+                                ? retractingMeetingId === meeting.meetingId
+                                : (movingMeetingId === meeting.meetingId
+                                  ? movingMeetingLoading
+                                  : (profileList.length <= 1 || movingMeetingLoading && movingMeetingId === meeting.meetingId))"
+                            >
+                              {{ meeting.status === 'retracted'
+                                ? (retractingMeetingId === meeting.meetingId ? '删除中...' : '删除')
+                                : (movingMeetingId === meeting.meetingId
+                                  ? '取消'
+                                  : '迁移') }}
+                            </button>
+                          </div>
+                          <div v-if="movingMeetingId === meeting.meetingId" class="expert-meeting-move-editor">
+                            <select v-model="moveMeetingTargetSlug" class="expert-meeting-select">
+                              <option value="" disabled>选择迁移目标专家</option>
+                              <option v-for="p in profileList.filter((item) => item.slug !== profileDetail.slug)" :key="p.slug" :value="p.slug">
+                                {{ p.name }}
+                              </option>
+                            </select>
+                            <button class="btn" @click="confirmMoveProfileMeeting(meeting.meetingId)" :disabled="movingMeetingLoading || !moveMeetingTargetSlug">
+                              {{ movingMeetingLoading ? '迁移中...' : '确认' }}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-if="expandedProfileMeetingId === meeting.meetingId" class="expert-meeting-detail">
+                        <div v-if="profileMeetingDetailLoadingId === meeting.meetingId && !getProfileMeetingDetail(meeting.meetingId)" class="hint">详情加载中...</div>
+                        <div v-else-if="getProfileMeetingDetail(meeting.meetingId)" class="expert-meeting-detail-grid">
+                          <div class="expert-meeting-detail-card">
+                            <div class="expert-meeting-detail-label">会议信息</div>
+                            <div class="expert-meeting-detail-meta">
+                              <span>开始：{{ formatDateTimeText(getProfileMeetingDetail(meeting.meetingId).startedAt) }}</span>
+                              <span>结束：{{ formatDateTimeText(getProfileMeetingDetail(meeting.meetingId).endedAt) }}</span>
+                              <span>截图 {{ getProfileMeetingDetail(meeting.meetingId).imageCount || 0 }} 张</span>
+                              <span>记忆单元 {{ getProfileMeetingDetail(meeting.meetingId).memoryUnitCount || 0 }} 条</span>
+                            </div>
+                          </div>
+                          <div v-if="getProfileMeetingSummaryItems(meeting.meetingId, 'coreConclusions').length" class="expert-meeting-detail-card">
+                            <div class="expert-meeting-detail-label">核心结论</div>
+                            <ul class="expert-meeting-detail-list">
+                              <li v-for="item in getProfileMeetingSummaryItems(meeting.meetingId, 'coreConclusions')" :key="'core-' + item">{{ item }}</li>
+                            </ul>
+                          </div>
+                          <div v-if="getProfileMeetingSummaryItems(meeting.meetingId, 'newKnowledgePoints').length" class="expert-meeting-detail-card">
+                            <div class="expert-meeting-detail-label">新知识点</div>
+                            <ul class="expert-meeting-detail-list">
+                              <li v-for="item in getProfileMeetingSummaryItems(meeting.meetingId, 'newKnowledgePoints')" :key="'knowledge-' + item">{{ item }}</li>
+                            </ul>
+                          </div>
+                          <div v-if="getProfileMeetingSummaryItems(meeting.meetingId, 'reasoningFrameworks').length" class="expert-meeting-detail-card">
+                            <div class="expert-meeting-detail-label">判断框架</div>
+                            <ul class="expert-meeting-detail-list">
+                              <li v-for="item in getProfileMeetingSummaryItems(meeting.meetingId, 'reasoningFrameworks')" :key="'framework-' + item">{{ item }}</li>
+                            </ul>
+                          </div>
+                          <div v-if="getProfileMeetingSummaryItems(meeting.meetingId, 'riskPoints').length" class="expert-meeting-detail-card">
+                            <div class="expert-meeting-detail-label">风险点</div>
+                            <ul class="expert-meeting-detail-list">
+                              <li v-for="item in getProfileMeetingSummaryItems(meeting.meetingId, 'riskPoints')" :key="'risk-' + item">{{ item }}</li>
+                            </ul>
+                          </div>
+                          <div v-if="getProfileMeetingSummaryItems(meeting.meetingId, 'evidenceSnippets').length" class="expert-meeting-detail-card expert-meeting-detail-wide">
+                            <div class="expert-meeting-detail-label">证据片段</div>
+                            <ul class="expert-meeting-detail-list">
+                              <li v-for="item in getProfileMeetingSummaryItems(meeting.meetingId, 'evidenceSnippets')" :key="'evidence-' + item">{{ item }}</li>
+                            </ul>
+                          </div>
+                          <div v-if="getProfileMeetingDetail(meeting.meetingId).transcriptPreview.length" class="expert-meeting-detail-card expert-meeting-detail-wide">
+                            <div class="expert-meeting-detail-label">最近转写片段</div>
+                            <div class="expert-meeting-transcript-preview">
+                              <div v-for="(line, idx) in getProfileMeetingDetail(meeting.meetingId).transcriptPreview" :key="'preview-' + idx" class="expert-meeting-transcript-line">{{ line }}</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div v-else class="hint">暂无可展示详情。</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1583,33 +1888,33 @@ const vm = createApp({
 
       <div v-if="showCaptureProfileModal" style="position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px;">
         <div class="card" style="width:min(520px,100%);margin:0;">
-          <div class="panel-title">{{ captureProfileMode === 'create' ? '新建画像' : '选择本次要更新的画像' }}</div>
+          <div class="panel-title">{{ captureProfileMode === 'create' ? '新建专家' : '选择本次要更新的专家' }}</div>
           <div class="hint" style="margin-top:0;">
             {{ captureProfilePurpose === 'manage'
-              ? '手动创建一个画像，后续录屏可以直接复用。'
+              ? '手动创建一个专家知识体，后续录屏可以直接复用。'
               : captureProfileMode === 'create'
-              ? '手动创建一个画像，后续录屏可以直接复用。'
-              : '本次录屏的增量分析和画像更新只会写入你手动选择的这一个画像。' }}
+              ? '手动创建一个专家知识体，后续录屏可以直接复用。'
+              : '本次录屏的增量分析和知识更新只会写入你手动选择的这一个专家。' }}
           </div>
 
           <div v-if="captureProfileMode === 'select'" style="margin-top:16px;">
-            <div v-if="profileList.length === 0" class="hint">当前没有可选画像，请先新建。</div>
+            <div v-if="profileList.length === 0" class="hint">当前没有可选专家，请先新建。</div>
             <select v-else v-model="captureProfileSlug" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;background:#fff;">
-              <option value="" disabled>请选择画像</option>
+              <option value="" disabled>请选择专家</option>
               <option v-for="p in profileList" :key="p.slug" :value="p.slug">
                 {{ p.name }}{{ p.role ? ' · ' + p.role : '' }}
               </option>
             </select>
             <div style="display:flex;justify-content:flex-end;margin-top:10px;">
-              <button class="btn secondary" @click="captureProfileMode = 'create'">新建画像</button>
+              <button class="btn secondary" @click="captureProfileMode = 'create'">新建专家</button>
             </div>
           </div>
 
           <div v-else style="display:flex;flex-direction:column;gap:10px;margin-top:16px;">
-            <input v-model="newProfileName" placeholder="画像名称，例如：张三 / 李工" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;" />
-            <input v-model="newProfileRole" placeholder="角色，可选，例如：架构师 / 产品经理" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;" />
+            <input v-model="newProfileName" placeholder="专家名称，例如：糖尿病临床专家 / AI 产品策略专家" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;" />
+            <input v-model="newProfileRole" placeholder="领域，可选，例如：内分泌 / AI 产品" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;" />
             <div style="display:flex;justify-content:flex-end;">
-              <button v-if="profileList.length > 0" class="btn secondary" @click="captureProfileMode = 'select'">返回选择已有画像</button>
+              <button v-if="profileList.length > 0" class="btn secondary" @click="captureProfileMode = 'select'">返回选择已有专家</button>
             </div>
           </div>
 
@@ -1619,7 +1924,7 @@ const vm = createApp({
             <button class="btn secondary" @click="closeCaptureProfileModal">取消</button>
             <button v-if="captureProfileMode === 'select'" class="btn" @click="confirmCaptureProfile">{{ captureProfilePurpose === 'manage' ? '确认选中' : '确认并开始录屏' }}</button>
             <button v-else class="btn" @click="confirmCaptureProfile">
-              {{ captureProfilePurpose === 'manage' ? '创建画像' : (profileList.length > 0 ? '创建并选中' : '创建并开始录屏') }}
+              {{ captureProfilePurpose === 'manage' ? '创建专家' : (profileList.length > 0 ? '创建并选中' : '创建并开始录屏') }}
             </button>
           </div>
         </div>

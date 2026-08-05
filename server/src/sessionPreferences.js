@@ -1,4 +1,4 @@
-﻿const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
+﻿﻿﻿﻿﻿﻿const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
 
 function toIsoString(value, fallback = "") {
   if (typeof value === "string" && value.trim()) {
