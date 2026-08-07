@@ -809,12 +809,13 @@ const vm = createApp({
       };
     }
 
-    async function requestMeetingAdviceManually(manualInstruction = "") {
+    async function requestMeetingAdviceManually(manualInstruction) {
       if (meetingAdvisorLoading.value) return;
       const forceWebSearch = meetingAdvisorForceWebSearch.value === true;
-      const normalizedManualInstruction = typeof manualInstruction === "string"
-        ? manualInstruction.trim()
-        : meetingAdviceManualInstruction.value.trim();
+      const normalizedManualInstruction = (typeof manualInstruction === "string"
+        ? manualInstruction
+        : meetingAdviceManualInstruction.value
+      ).trim();
       const recentLines = transcriptLines.value.slice(-8);
       const contextLines = transcriptLines.value.slice(-16);
       if (recentLines.length === 0) {
@@ -924,7 +925,6 @@ const vm = createApp({
           manualInstruction: typeof manualInstruction === "string" ? manualInstruction.trim() : "",
           forceWebSearch
         };
-
         meetingAdvisorStatus.value = forceWebSearch
           ? "已进入强制联网模式，正在生成建议..."
           : (forceTrigger && !trigger.data.shouldTrigger

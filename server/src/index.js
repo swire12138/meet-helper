@@ -32,6 +32,7 @@ import {
   normalizeTemporaryPreferenceData,
   removeTemporaryPreferenceItem
 } from "./sessionPreferences.js";
+import { buildChatSystemPrompt } from "./profilePrompts.js";
 import { detectMeetingAdviceTrigger, generateMeetingAdvice } from "./meetingAdvisor.js";
 import {
   buildExpertChatSystemPrompt,
@@ -937,7 +938,6 @@ app.post("/api/meeting-advisor/advice", async (req, res) => {
       manualInstruction = "",
       forceWebSearch = false
     } = req.body || {};
-
     const advice = await generateMeetingAdvice({
       signalType: typeof signalType === "string" ? signalType : "",
       focusSpan: typeof focusSpan === "string" ? focusSpan : "",
